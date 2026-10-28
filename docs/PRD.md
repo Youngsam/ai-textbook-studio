@@ -1,3 +1,225 @@
-# AI Textbook Studio — PRD v1.0
+# AI Textbook Studio — 제품·기술 기획서 (PRD v1.0)
 
-The canonical full planning document is available from the original project specification. This stub will be replaced with the full text before development.
+> 작성: 2026-10-28 · 상태: MVP 개발 착수용
+>
+> **Book as Project · Context-aware Tutoring · Resume Anywhere**
+
+## 1. 비전과 문제 정의
+
+두꺼운 전문서적을 PDF·스캔 이미지로 읽는 동안 어려운 문단, 수식, 도표를 별도의 채팅창으로 옮기는 과정은 번거롭다. 독서 위치·질문·설명·학습 노트 또한 분리되기 쉽다.
+
+**AI Textbook Studio**는 책 한 권을 독립적인 **영속 학습 프로젝트**로 취급한다. 현재 페이지와 선택 문단을 AI 튜터에게 자동 전달하고, 프로젝트를 다시 열면 독서 상태·대화 기록을 복원한다.
+
+### MVP 성공 기준
+- PDF를 업로드해 프로젝트를 생성하고 브라우저에서 읽을 수 있다.
+- 문장을 선택해 해당 문맥에 관해 질문할 수 있다.
+- 질문에 현재 페이지 번호와 선택 영역이 첨부된다.
+- 앱을 닫았다 열면 마지막 위치와 대화가 복구된다.
+- 이미지 기반 스캔 PDF도 현재 페이지 이미지로 질문할 수 있다.
+- 원본 책, 추출 텍스트, 개인 기록, API 키가 공개 GitHub 저장소에 포함되지 않는다.
+
+## 2. 사용자 시나리오
+
+1. 라이브러리에서 **새 책 추가**를 선택한다.
+2. PDF 파일과 책 제목을 지정한다.
+3. 새 학습 프로젝트가 생성되고 페이지 수가 표시된다.
+4. 화면 왼쪽 PDF 뷰어에서 읽다가 문단을 드래그한다.
+5. 화면 오른쪽 AI 채팅에 “왜 이 수식이 성립하지?”라고 질문한다.
+6. AI는 해당 페이지와 선택 문단을 참고해 설명한다.
+7. 브라우저를 닫고 다른 컴퓨터에서 접속한다.
+8. 같은 프로젝트를 열면 페이지와 대화 이력이 복원된다.
+
+### 기본 UI
+- 라이브러리: 도서 목록, 현재 페이지, 진행률, 최근 열람일, 프로젝트 생성/삭제
+- 독서 화면: PDF 뷰어, 페이지 탐색, 줌, 텍스트 선택
+- AI 패널: 질문 입력, 답변 스트림, 참조 페이지, 질문 기록
+- 설정: LLM 제공자/모델, 응답 스타일, 페이지 이미지 첨부 선택
+
+## 3. 범위
+
+### P0 — 주말 MVP
+- PDF 업로드 및 책 프로젝트 생성
+- 프로젝트 목록·열기·삭제(삭제 시 명시적 확인)
+- PDF.js 뷰어의 페이지 탐색과 선택 문구 감지
+- 현재 페이지·선택 텍스트 기반 LLM 질문/답변
+- 프로젝트별 대화 기록 및 독서 위치 영속 저장
+- 환경변수를 이용한 API 키 관리
+- 로컬 네트워크에서 사용 가능한 웹앱
+
+### P1 — MVP 직후
+- OCR 및 페이지별 텍스트 캐시
+- 이미지/표/수식 위치 참조와 이미지 첨부
+- 북마크·하이라이트·개인 주석
+- 질문 기록 검색
+- 프로젝트 ZIP 내보내기/가져오기
+- 관련 페이지 검색(RAG)
+
+### P2 — 후속 확장
+- 장별 AI 학습 노트
+- 취약 개념·선행 개념 연결
+- 학습 진도·이해도 대시보드
+- 복습 문제 및 간격 반복
+- 다중 기기 동시 편집 충돌 관리
+
+### MVP에서 제외
+공유 학습방, 다중 사용자 협업, 결제, 출판 도서 데이터 공유, 복잡한 에이전트 및 전체 도서 자동 요약.
+
+## 4. 권장 기술 스택
+
+| 영역 | 채택 | 이유 |
+|---|---|---|
+| 프론트엔드 | React + TypeScript + Vite | 간단한 SPA 개발 |
+| PDF 뷰어 | PDF.js | 렌더링 및 텍스트 레이어 선택 |
+| 서버 | Python + FastAPI | 기존 개발 환경 활용 |
+| DB | SQLite + SQLAlchemy | 경량 영속 상태 |
+| PDF 처리 | PyMuPDF | 메타데이터·페이지 텍스트 |
+| LLM | OpenAI API 등 교체 가능한 어댑터 | 공급자 종속 최소화 |
+| 검색 | 초기 단순 페이지 조회; 추후 FTS/벡터 검색 | MVP 복잡도 절감 |
+| 배포 | Mac mini, Docker Compose는 선택 | 개인 셀프호스팅 |
+
+OCR 엔진은 P1에서 별도 결정한다. 스캔본 MVP는 이미지 전달 방식으로 처리한다.
+
+## 5. 아키텍처
+
+```text
+Browser: React + PDF.js + Chat UI
+            |
+            | HTTP / SSE
+            v
+FastAPI
+  ├─ Projects API / Files API
+  ├─ Reader State API
+  ├─ Chat & LLM Context Service
+  └─ PDF Processing Service
+            |
+            +--> SQLite (metadata, state, messages)
+            +--> Local storage (original PDF, page cache)
+            +--> LLM Provider API
+```
+
+핵심 원칙은 파일 시스템에 도서 원본을 저장하고, SQLite에 파일 경로와 사용자 상태를 저장하는 것이다. API 호출마다 책 전체를 보내지 않는다.
+
+## 6. 프로젝트 영속 모델
+
+프로젝트의 기본 항목:
+- `id`: UUID
+- `title`, `author`(optional), `created_at`, `last_opened_at`
+- `pdf_path`, `pdf_sha256`, `page_count`
+- `reading_state`: 현재 페이지, 줌, 스크롤 좌표, 갱신 시점
+- `chat_threads`, `messages`: 질문과 응답, 참조 페이지/선택 문구
+
+### 초기 DB 테이블
+
+**books**: id, title, author, pdf_path, pdf_sha256, page_count, created_at, updated_at  
+**reading_states**: book_id, page, zoom, scroll_offset, updated_at  
+**chat_threads**: id, book_id, title, created_at  
+**messages**: id, thread_id, role, content, page, selected_text, created_at
+
+P1: annotations, page_texts, learning_notes, learning_concepts.
+
+### 로컬 저장 예시
+
+```text
+data/
+  learning.db
+  books/<book-id>/original.pdf
+  books/<book-id>/extracted/
+  books/<book-id>/images/
+```
+
+프로젝트 내보내기 시 버전이 지정된 manifest를 포함하고, ZIP 경로 순회 공격 및 압축 폭탄을 방어한다.
+
+## 7. API 초안
+
+| Method | Endpoint | 목적 |
+|---|---|---|
+| GET | /api/health | 헬스 체크 |
+| GET | /api/books | 라이브러리 목록 |
+| POST | /api/books | PDF 업로드·프로젝트 생성 |
+| GET | /api/books/{book_id} | 프로젝트 메타데이터 |
+| GET | /api/books/{book_id}/pdf | 원본 PDF 스트리밍 |
+| DELETE | /api/books/{book_id} | 프로젝트 삭제 |
+| GET | /api/books/{book_id}/state | 독서 위치 |
+| PUT | /api/books/{book_id}/state | 독서 위치 저장 |
+| GET | /api/books/{book_id}/messages | 대화 이력 |
+| POST | /api/books/{book_id}/chat | 컨텍스트 포함 질문 및 스트리밍 응답 |
+
+초기 구현에서는 단일 사용자 환경을 가정한다. 외부 공개 전 인증과 접근 제어가 필수다.
+
+## 8. AI 컨텍스트 설계
+
+질문마다 전달할 내용:
+1. 시스템 지침: 현재 책의 학습 도우미로 행동, 불확실성 명시.
+2. 프로젝트 정보: 책 제목 및 장 정보(가능할 경우).
+3. 현재 페이지 번호와 페이지 텍스트(추출 가능 시).
+4. 선택 문구 및 근접 문맥.
+5. 최근 관련 대화의 제한된 일부.
+6. 필요한 경우 현재 페이지의 렌더링 이미지.
+
+### 컨텍스트 우선순위
+**선택 문구 > 현재 페이지 > 앞뒤 페이지 > 관련 과거 질문 > 책 전체 검색**.
+
+- 컨텍스트 토큰 한도를 설정하고, 긴 기록은 요약/검색한다.
+- 텍스트가 없는 스캔 페이지는 이미지 경로로 처리한다.
+- 페이지 이미지와 API 요청 비용을 고려해 캐싱 및 사용량 로깅을 적용한다.
+- 사용자 제공 문서 내용은 신뢰되지 않는 입력으로 취급한다.
+- 문헌에 없는 사실을 인용하는 대신 추정임을 명시하고 참조 페이지를 제시한다.
+
+## 9. 상태 저장·복원
+
+- 페이지를 이동하거나 줌을 변경할 때 debounce를 적용해 상태 저장.
+- 프로젝트 오픈 시 마지막 페이지와 스크롤 위치 복구.
+- 채팅 메시지는 DB에 저장하고 재진입 시 해당 책의 이력을 표시.
+- 요청 중 장애가 발생하면 사용자 질문 및 실패 상태를 보존.
+- 네트워크 오류로 저장 실패 시 UI에서 재시도 표시.
+
+## 10. 보안·저작권
+
+- **Public GitHub에는 소스코드와 비밀이 제거된 설정 예제만 커밋**.
+- `data/`, `projects/`, `uploads/`, PDF, OCR 결과, DB, `.env`는 Git 관리 제외.
+- 파일 업로드는 PDF 서명·크기·페이지 수 검증 후 UUID 이름으로 저장; 전달받은 파일명을 경로로 사용하지 않는다.
+- 로컬 네트워크 외부 노출 시 인증, TLS 및 접근 제한 구성.
+- LLM API로 본문/이미지가 전송된다는 사실을 UI에 명시.
+- 원본 저작권 도서와 OCR 결과를 재배포하지 않는다.
+- API 키는 서버에서만 사용하며 클라이언트 번들에 포함하지 않는다.
+- 백업 시 개인 학습 기록이 포함됨을 고려한다.
+
+## 11. 개발 순서
+
+### 토요일 — 프로젝트/독서
+1. FastAPI 프로젝트 생성 및 DB 마이그레이션/스키마 구성.
+2. 책 업로드 및 목록 API, PDF 다운로드 구현.
+3. React + PDF.js 뷰어와 프로젝트 라이브러리 구현.
+4. 페이지·줌·스크롤 저장 후 브라우저 재시작 복원 검증.
+
+### 일요일 — AI 질의응답
+1. PDF 텍스트 추출 및 현재 페이지 텍스트 취득.
+2. PDF 텍스트 선택 이벤트를 질문 컨텍스트로 연결.
+3. LLM 서비스 레이어와 답변 스트리밍 구성.
+4. 프로젝트별 질문·응답 영속화.
+5. 스캔 PDF 현재 페이지 이미지 질문 실험.
+6. 보안·오류 처리·재시작 테스트.
+
+## 12. 검수 시나리오
+
+- PDF를 등록해 프로젝트 목록에 표시한다.
+- 책 A의 127쪽에서 선택 문구를 질문한다.
+- 답변이 현재 페이지와 선택 문구를 반영한다.
+- 책 B를 열어도 책 A의 이력과 혼합되지 않는다.
+- 서버를 재시작한 뒤 책 A를 다시 열면 읽던 위치/채팅이 유지된다.
+- 텍스트 레이어가 없는 스캔 페이지에 이미지 기반 질문이 가능하다.
+- API 키 없이 실행 시 명확한 설정 오류가 표시된다.
+- 개인 데이터와 PDF가 Git 추적 대상에 포함되지 않는다.
+
+## 13. 오픈 이슈
+
+- 공급자별 멀티모달 API 차이를 추상화할 인터페이스
+- OCR 도입 시 수식 처리 품질 및 성능 측정
+- 대화 이력 검색 및 학습 요약 방식
+- 프로젝트 Import/Export 포맷 버전 관리
+- 다중 사용자의 인증 및 서버 외부 접근 허용 범위
+- 모델별 비용·지연시간 모니터링
+
+## 14. 완료 정의
+
+**MVP 완료**는 “책 등록 → PDF 읽기 → 현재 페이지/선택 문구 질문 → 답변 → 앱 종료 → 같은 책·위치·대화 재개”가 실제 환경에서 안정적으로 동작하는 상태다. 그 전에는 RAG와 학습 프로필을 확장하지 않는다.
