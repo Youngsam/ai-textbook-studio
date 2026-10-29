@@ -28,3 +28,13 @@ build/
 # OS / IDE
 .DS_Store
 .vscode/
+
+# Local package caches and browser-test artifacts
+.cache/
+.ruff_cache/
+test-results/
+playwright-report/
+frontend/public/pdfjs/
+*.tsbuildinfo
+*.db-wal
+*.db-shm

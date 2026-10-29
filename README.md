@@ -1,20 +1,102 @@
 # AI Textbook Studio
 
-A self-hosted, context-aware AI textbook reader. Each book is a persistent learning project.
+PDF 한 권을 하나의 학습 프로젝트로 관리하는 개인용 웹앱입니다. PDF를 읽고 문장을 선택해 질문하며, 같은 서버에 다시 접속하면 독서 위치와 대화를 복원합니다.
 
-## Core goals
+현재 구현: PDF 업로드·목록·확인 후 삭제, PDF.js 텍스트 선택·페이지·줌, 독서 상태 저장, 책별 대화, AI 답변 스트리밍, 스캔 페이지 이미지 질문, 실패·중단 기록과 재시도. OCR과 RAG는 후속 범위입니다.
 
-- Read PDFs and scanned textbooks in the browser.
-- Ask questions about the current page or selected passage.
-- Resume reading with saved position and chat history.
-- Keep book files, OCR output, learning data, and API keys outside the public repository.
+PDF 양옆의 방향 버튼으로 페이지를 넘길 수 있습니다. 학습 도우미와 PDF 사이의 경계선을 드래그하면 도우미 너비가 바뀌고 이 브라우저에 저장됩니다. 경계선을 두 번 클릭하면 기본 너비로 돌아오며 키보드 좌우 방향키도 사용할 수 있습니다. 모바일에서는 세로 배치를 유지합니다.
 
-## Planned stack
+학습 도우미 설정에서 설명 모델을 선택할 수 있으며 선택은 서버에 저장됩니다. 메뉴는 `.env`의 `LLM_MODEL`과 `LLM_ALLOWED_MODELS`로 구성합니다. 기본 선택지는 `gpt-5.4-mini`, `gpt-5.4`이며 실제 사용 권한은 API 계정에 따라 달라집니다. 진행 중인 답변과 실패 답변 재시도는 질문 당시 모델을 유지합니다.
 
-React + PDF.js (frontend), Python + FastAPI (backend), SQLite (state), and an LLM API.
+답변의 `$...$`, `$$...$$`, `\(...\)`, `\[...\]` 수식은 KaTeX로, `mermaid` 코드 블록은 다이어그램으로 표시합니다. 잘못된 다이어그램은 원문을 표시하며 일반 코드 블록은 그대로 보존합니다. 수식 폰트와 다이어그램 코드는 로컬 번들로 제공합니다.
 
-## Development plan
+## 설치와 개발 실행
 
-See [Product & Technical Requirements (Korean)](docs/PRD.md).
+Python 3.13 이상, Node.js 22.16 이상, npm, uv가 필요합니다. 현재 검증 환경은 macOS / Python 3.13.7 / Node 22.16.0입니다.
 
-> Status: planning / MVP not yet implemented.
+```sh
+make install
+```
+
+`.env.example`을 참고해 저장소 루트에 `.env`를 준비합니다. 기존 `.env`가 있으면 덮어쓰지 말고 필요한 항목만 추가합니다.
+
+```dotenv
+OPENAI_API_KEY=your-server-side-api-key
+LLM_PROVIDER=openai
+LLM_MODEL=gpt-5.4-mini
+DATABASE_URL=sqlite:///./data/learning.db
+```
+
+모델은 계정에서 사용 가능한 이미지 입력·Responses 스트리밍 지원 모델로 설정합니다. 예제 모델의 기능은 [OpenAI 공식 문서](https://developers.openai.com/api/docs/models/gpt-5.4-mini)를 참고하세요. API 키와 모델이 없어도 도서 등록·읽기·위치 저장은 사용할 수 있습니다. 인증 오류가 나면 키를 서버 `.env`에서 수정하고 서버를 재시작합니다.
+
+API 키는 프로젝트 `.env`에 항목이 있으면 그 값을 셸의 같은 이름 환경변수보다 우선합니다. 그 밖의 설정은 셸 환경변수가 `.env`보다 우선합니다.
+
+```sh
+make dev
+```
+
+브라우저에서 **http://127.0.0.1:5173** 에 접속합니다. API는 8000 포트, API 문서는 http://127.0.0.1:8000/docs 입니다. Ctrl+C로 두 프로세스를 함께 종료합니다. DB 마이그레이션은 서버 시작 시 자동 적용합니다. 데이터 경로는 실행 디렉터리와 관계없이 저장소 루트 기준으로 정규화합니다.
+
+외부 AI 호출 없는 개발·테스트 모드:
+
+```sh
+LLM_PROVIDER=fake make dev
+```
+
+화면에 테스트 모드임을 표시하며 실제 설명을 생성하지 않습니다. 일반 실행과 같은 데이터 경로를 사용하므로 완전히 분리하려면 `DATA_DIR`과 `DATABASE_URL`을 **둘 다** 별도 경로로 설정합니다.
+
+## 단일 서버 실행과 LAN 접속
+
+```sh
+make build
+make serve
+```
+
+빌드된 웹 화면과 API를 모두 **http://127.0.0.1:8000** 에서 제공합니다. 다른 기기도 같은 서버에 접속해야 위치와 이력이 이어집니다.
+
+신뢰하는 개인 LAN에서는 `.env`의 `ALLOWED_HOSTS`에 서버 IP/호스트명을, `ALLOWED_ORIGINS`에 실제 브라우저 origin을 추가합니다. 예를 들어 서버가 `192.168.0.10`이면 기존 값에 각각 `192.168.0.10`, `http://192.168.0.10:8000`을 추가하고 실행합니다.
+
+```sh
+cd backend
+.venv/bin/python -m uvicorn app.asgi:app --host 0.0.0.0 --port 8000
+```
+
+MVP에는 사용자 인증이 없으며 개인 LAN 사용을 전제로 합니다. 인터넷 공개·공유 서버 운영은 구현 범위에 포함하지 않습니다. 서버 프로세스는 1개로 실행하고 SQLite는 로컬 디스크에 둡니다.
+
+## 검증
+
+```sh
+make test
+```
+
+백엔드 통합 테스트, SSE 파서 테스트, TypeScript 검사·운영 빌드를 실행합니다. 테스트는 직접 생성한 PDF와 임시 SQLite를 사용하며 실제 API를 호출하지 않습니다.
+
+실제 API 연결은 `make test-live`로 별도 검증합니다. 직접 생성한 텍스트·스캔 PDF로 각각 한 번씩 질문하므로 API 사용량이 발생합니다. 기존 서재를 사용하지 않고 임시 디렉터리를 정리합니다.
+
+Chrome이 설치된 환경에서 브라우저 통합 검증:
+
+```sh
+# 터미널 1: 실제 서재와 분리한 테스트 서버
+LLM_PROVIDER=fake DATA_DIR=.cache/e2e DATABASE_URL=sqlite:///./.cache/e2e/learning.db make dev
+# 터미널 2
+cd frontend
+npm run test:e2e
+```
+
+PDF 업로드, 127쪽 문구 선택·질문, 저장 실패·복구, 새로고침·두 번째 브라우저 세션에서 복원, 스캔 이미지 질문, 삭제 확인과 모바일 화면을 검증합니다. 브라우저 테스트는 테스트 서버에서만 실행합니다. 성공한 테스트의 책은 삭제하며 실패한 테스트 데이터는 `.cache/e2e`에 남을 수 있습니다.
+
+## 데이터와 설정
+
+- 기본 저장 위치: `data/learning.db`, `data/books/<uuid>/original.pdf`, 페이지 이미지 캐시.
+- 업로드 기본 상한: 100 MiB / 2,000페이지. 손상·암호화 PDF는 거절합니다.
+- 현재 페이지는 PDF 물리 페이지 번호이며 1부터 시작합니다. 인쇄된 쪽 번호와 다를 수 있습니다.
+- 상태는 500ms debounce로 저장하며 실패하면 화면에 재시도를 표시합니다. 여러 기기 동시 사용은 서버가 마지막으로 받은 저장을 채택합니다.
+- 이미지 자동 모드는 텍스트가 부족한 페이지에 이미지를 첨부합니다. 텍스트가 있는 수식·도표는 AI 설정에서 ‘항상 첨부’를 선택합니다.
+- 요청이 중단되면 부분 답변·질문을 보존합니다. 재시도는 새로운 API 호출이므로 사용량이 추가됩니다.
+- 책·추출 문맥·학습 기록·`.env`는 Git에 포함하지 않습니다. 질문할 때 표시된 문맥과 설정에 따른 페이지 이미지만 외부 LLM으로 전송합니다. API 키는 서버에서만 사용합니다.
+- 백업은 서버를 종료한 후 DB와 `books/`를 포함한 데이터 디렉터리를 함께 복사합니다. 복원은 서버를 종료한 상태에서 수행하고 데이터·DB 경로를 확인합니다.
+- PDF 엔진 PyMuPDF의 라이선스는 [공식 안내](https://pymupdf.readthedocs.io/en/latest/about.html#license-and-copyright)를 확인하세요. 저장소 자체의 공개 배포 라이선스는 아직 정하지 않았습니다.
+
+## 설계와 진행 상태
+
+[제품 요구사항](docs/PRD.md) · [구현 계획](docs/IMPLEMENTATION_PLAN.md) · [구현·검증 현황](docs/IMPLEMENTATION_STATUS.md)

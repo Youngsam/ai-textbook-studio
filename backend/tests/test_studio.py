@@ -1,0 +1,419 @@
+import asyncio
+import json
+from uuid import uuid4
+
+import pymupdf
+import pytest
+from fastapi.testclient import TestClient
+from sqlalchemy import func, select
+
+from app.config import Settings
+from app.main import create_app
+from app.models import Book, ChatRequest, Message, ReadingState, Thread
+
+
+def make_pdf(pages=3, scan=False):
+    with pymupdf.open() as document:
+        for index in range(pages):
+            page = document.new_page()
+            if scan:
+                pixmap = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 80, 80), False)
+                pixmap.clear_with(200)
+                page.insert_image(pymupdf.Rect(40, 40, 200, 200), pixmap=pixmap)
+            else:
+                page.insert_text(
+                    (60, 80),
+                    f"Learning page {index + 1}: A vector has both magnitude and direction.",
+                )
+                page.insert_text(
+                    (60, 110), "Select this passage and ask a question about this page."
+                )
+        return document.tobytes()
+
+
+@pytest.fixture
+def settings(tmp_path):
+    return Settings(
+        _env_file=None,
+        data_dir=tmp_path,
+        database_url=f"sqlite:///{tmp_path}/learning.db",
+        llm_provider="fake",
+    )
+
+
+@pytest.fixture
+def client(settings):
+    with TestClient(create_app(settings)) as client:
+        yield client
+
+
+def upload(client, title="Linear algebra", pdf=None):
+    response = client.post(
+        "/api/books",
+        data={"title": title},
+        files={
+            "file": ("../../outside.pdf", pdf if pdf is not None else make_pdf(), "application/pdf")
+        },
+    )
+    assert response.status_code == 201, response.text
+    return response.json()
+
+
+def ask(client, book, **changes):
+    body = {
+        "request_id": str(uuid4()),
+        "question": "Explain this concept",
+        "page": 1,
+        "selected_text": "magnitude and direction",
+        **changes,
+    }
+    return client.post(f"/api/books/{book['id']}/chat", json=body), body
+
+
+def events(response):
+    assert response.status_code == 200, response.text
+    return [
+        (block.splitlines()[0].removeprefix("event: "), json.loads(block.split("data: ", 1)[1]))
+        for block in response.text.strip().split("\n\n")
+        if block.startswith("event:")
+    ]
+
+
+def test_upload_range_state_restart_and_delete(settings):
+    app = create_app(settings)
+    with TestClient(app) as client:
+        book = upload(client, pdf=make_pdf(130))
+        assert book["page_count"] == 130
+        assert "pdf_path" not in book
+        assert client.get("/api/books").json()["items"][0]["id"] == book["id"]
+        response = client.get(f"/api/books/{book['id']}/pdf", headers={"Range": "bytes=0-9"})
+        assert response.status_code == 206
+        assert response.content.startswith(b"%PDF-")
+        assert (
+            client.get(
+                f"/api/books/{book['id']}/pdf", headers={"Range": "bytes=99999999-"}
+            ).status_code
+            == 416
+        )
+        state = {"page": 127, "zoom": 1.4, "scroll_offset": 0.37}
+        assert client.put(f"/api/books/{book['id']}/state", json=state).status_code == 200
+        assert (
+            client.put(f"/api/books/{book['id']}/state", json={**state, "page": 131}).status_code
+            == 422
+        )
+        response, _ = ask(client, book, page=127)
+        assert [kind for kind, _ in events(response)][-1] == "completed"
+    with TestClient(create_app(settings)) as client:
+        restored = client.get(f"/api/books/{book['id']}/state").json()
+        assert all(restored[key] == value for key, value in state.items())
+        assert len(client.get(f"/api/books/{book['id']}/messages").json()["items"]) == 2
+        assert client.delete(f"/api/books/{book['id']}").status_code == 204
+        assert not (settings.data_dir / "books" / book["id"]).exists()
+        with client.app.state.Session() as session:
+            for model in (Book, ReadingState, Thread, ChatRequest, Message):
+                assert session.scalar(select(func.count()).select_from(model)) == 0
+
+
+def test_bad_upload_cleanup(client, settings):
+    for content in (b"not a PDF", b"%PDF-1.7 invalid document"):
+        response = client.post(
+            "/api/books", data={"title": "Broken"}, files={"file": ("book.pdf", content)}
+        )
+        assert response.status_code == 422
+    assert not list((settings.data_dir / "tmp").iterdir())
+    assert not list((settings.data_dir / "books").iterdir())
+
+
+def test_encrypted_pdf_rejected(client):
+    with pymupdf.open(stream=make_pdf(), filetype="pdf") as document:
+        encrypted = document.tobytes(
+            encryption=pymupdf.PDF_ENCRYPT_AES_256, owner_pw="owner", user_pw="reader"
+        )
+    response = client.post(
+        "/api/books", data={"title": "Encrypted"}, files={"file": ("encrypted.pdf", encrypted)}
+    )
+    assert response.status_code == 422
+
+
+def test_file_and_multipart_limits(settings):
+    settings.max_upload_bytes = 100
+    with TestClient(create_app(settings)) as client:
+        assert (
+            client.post(
+                "/api/books", data={"title": "Large"}, files={"file": ("big.pdf", make_pdf())}
+            ).status_code
+            == 413
+        )
+        response = client.post(
+            "/api/books",
+            content=b"x" * (1024 * 1024 + 101),
+            headers={"Content-Type": "multipart/form-data; boundary=test"},
+        )
+        assert response.status_code == 413
+        response = client.post(
+            "/api/books",
+            content=iter([b"x" * (1024 * 1024), b"y" * 200]),
+            headers={"Content-Type": "multipart/form-data; boundary=test"},
+        )
+        assert response.status_code == 413
+
+
+def test_page_count_limit(settings):
+    settings.max_pdf_pages = 1
+    with TestClient(create_app(settings)) as client:
+        assert (
+            client.post(
+                "/api/books", data={"title": "Large"}, files={"file": ("book.pdf", make_pdf())}
+            ).status_code
+            == 422
+        )
+
+
+def test_chat_context_idempotency_and_isolation(client):
+    book = upload(client)
+    other = upload(client, "Another book")
+    response, body = ask(client, book)
+    stream = events(response)
+    assert stream[0][0] == "accepted"
+    context = next(data for kind, data in stream if kind == "context")
+    assert "magnitude" in context["page_text"]
+    assert context["selected_text"] == body["selected_text"]
+    assert not context["image_attached"]
+    assert stream[-1][0] == "completed"
+    assert (
+        client.post(f"/api/books/{book['id']}/chat", json=body).json()["detail"]["code"]
+        == "request_exists"
+    )
+    assert (
+        client.post(f"/api/books/{book['id']}/chat", json={**body, "question": "different"}).json()[
+            "detail"
+        ]["code"]
+        == "request_payload_mismatch"
+    )
+    assert client.get(f"/api/books/{other['id']}/messages").json()["items"] == []
+    records = client.get(f"/api/books/{book['id']}/messages").json()["items"]
+    assert [record["role"] for record in records] == ["user", "assistant"]
+    assert records[1]["status"] == "completed"
+
+
+def test_scan_auto_image_and_text_only_error(client):
+    book = upload(client, pdf=make_pdf(1, scan=True))
+    stream = events(ask(client, book)[0])
+    context = next(data for kind, data in stream if kind == "context")
+    assert context["image_attached"] and not context["has_text"]
+    assert "base64" not in json.dumps(context)
+    stream = events(ask(client, book, image_mode="never")[0])
+    assert stream[-1][0] == "failed" and stream[-1][1]["code"] == "image_required"
+
+
+class FailingAdapter:
+    async def stream(self, context):
+        yield {"type": "delta", "text": "partial answer"}
+        raise RuntimeError("secret-provider-error")
+
+
+def test_failure_preserves_question_partial_and_retry(settings):
+    with TestClient(create_app(settings, adapter=FailingAdapter())) as client:
+        book = upload(client)
+        response, body = ask(client, book)
+        assert events(response)[-1][0] == "failed"
+        assert "secret-provider-error" not in response.text
+        records = client.get(f"/api/books/{book['id']}/messages").json()["items"]
+        assert records[-1]["content"] == "partial answer"
+        assert records[-1]["status"] == "failed"
+    with TestClient(create_app(settings)) as client:
+        response = client.post(f"/api/books/{book['id']}/chat/{body['request_id']}/retry")
+        assert events(response)[-1][0] == "completed"
+        records = client.get(f"/api/books/{book['id']}/messages").json()["items"]
+        assert len(records) == 3
+        assert records[-2]["content"] == "partial answer"
+        assert records[-1]["attempt"] == 2
+
+
+def test_restart_recovers_pending_requests(settings):
+    with TestClient(create_app(settings)) as client:
+        book = upload(client)
+        ask(client, book)
+        with client.app.state.Session.begin() as session:
+            row = session.scalar(select(ChatRequest))
+            row.status = "streaming"
+            message = session.scalar(select(Message).where(Message.role == "assistant"))
+            message.status = "streaming"
+    with TestClient(create_app(settings)) as client:
+        records = client.get(f"/api/books/{book['id']}/messages").json()["items"]
+        assert records[-1]["status"] == "interrupted"
+        assert records[-1]["error_code"] == "server_restarted"
+        assert client.delete(f"/api/books/{book['id']}").status_code == 204
+
+
+def test_unconfigured_llm_reading_still_works(settings):
+    settings.llm_provider = "openai"
+    settings.openai_api_key = ""
+    with TestClient(create_app(settings)) as client:
+        book = upload(client)
+        assert client.get(f"/api/books/{book['id']}/pdf").status_code == 200
+        assert ask(client, book)[0].status_code == 503
+        assert client.get("/api/settings").json()["llm_configured"] is False
+
+
+def test_preferences_api_validation_and_origin(client):
+    assert (
+        client.put(
+            "/api/settings", json={"response_style": "concise", "image_mode": "always"}
+        ).status_code
+        == 200
+    )
+    assert client.get("/api/settings").json()["image_mode"] == "always"
+    assert "openai_api_key" not in client.get("/api/settings").text
+    assert client.get("/api/health", headers={"Host": "attacker.example"}).status_code == 400
+    assert (
+        client.get("/api/health", headers={"Origin": "https://attacker.example"}).status_code == 403
+    )
+    assert client.get("/api/does-not-exist").status_code == 404
+    assert client.get("/api/books/not-a-uuid/pdf").status_code == 422
+
+
+class SlowAdapter:
+    async def stream(self, context):
+        yield {"type": "delta", "text": "starting"}
+        await asyncio.sleep(1)
+
+
+def test_timeout_is_persisted(settings):
+    settings.llm_timeout_seconds = 0.01
+    with TestClient(create_app(settings, adapter=SlowAdapter())) as client:
+        book = upload(client)
+        stream = events(ask(client, book)[0])
+        assert stream[-1][1]["code"] == "timeout"
+        assert (
+            client.get(f"/api/books/{book['id']}/messages").json()["items"][-1]["status"]
+            == "failed"
+        )
+
+
+def test_history_pagination(client):
+    book = upload(client)
+    ask(client, book)
+    latest = client.get(f"/api/books/{book['id']}/messages?limit=1").json()
+    earlier = client.get(
+        f"/api/books/{book['id']}/messages?limit=1&before={latest['next_cursor']}"
+    ).json()
+    assert latest["items"][0]["role"] == "assistant"
+    assert earlier["items"][0]["role"] == "user"
+    assert earlier["next_cursor"] is None
+
+
+def test_disconnect_preserves_partial_answer(settings):
+    app = create_app(settings, adapter=SlowAdapter())
+    with TestClient(app) as client:
+        book = upload(client)
+        payload = json.dumps(
+            {"request_id": str(uuid4()), "question": "Explain", "page": 1}
+        ).encode()
+
+        async def disconnected_request():
+            disconnected = asyncio.Event()
+            sent_body = False
+
+            async def receive():
+                nonlocal sent_body
+                if not sent_body:
+                    sent_body = True
+                    return {"type": "http.request", "body": payload, "more_body": False}
+                await disconnected.wait()
+                return {"type": "http.disconnect"}
+
+            async def send(message):
+                if b"event: delta" in message.get("body", b""):
+                    disconnected.set()
+
+            scope = {
+                "type": "http",
+                "asgi": {"version": "3.0", "spec_version": "2.0"},
+                "http_version": "1.1",
+                "method": "POST",
+                "scheme": "http",
+                "path": f"/api/books/{book['id']}/chat",
+                "query_string": b"",
+                "root_path": "",
+                "server": ("testserver", 80),
+                "client": ("test", 123),
+                "headers": [(b"host", b"testserver"), (b"content-type", b"application/json")],
+                "state": {},
+            }
+            await asyncio.wait_for(app(scope, receive, send), timeout=10)
+
+        asyncio.run(disconnected_request())
+        records = client.get(f"/api/books/{book['id']}/messages").json()["items"]
+        assert records[-1]["content"] == "starting"
+        assert records[-1]["status"] == "interrupted"
+
+
+def test_project_api_key_takes_priority_over_inherited_key(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "inherited-test-only")
+    dotenv = tmp_path / ".env"
+    dotenv.write_text("OPENAI_API_KEY=project-test-only\n")
+    assert Settings(_env_file=dotenv).openai_api_key == "project-test-only"
+    assert Settings(_env_file=None).openai_api_key == "inherited-test-only"
+    assert (
+        Settings(_env_file=dotenv, openai_api_key="explicit-test-only").openai_api_key
+        == "explicit-test-only"
+    )
+
+
+def test_selected_model_persists_and_reaches_chat_and_retry(settings):
+    class CaptureAdapter:
+        def __init__(self):
+            self.models = []
+
+        async def stream(self, context):
+            self.models.append(context.model)
+            if len(self.models) == 1:
+                raise RuntimeError("synthetic failure")
+            yield {"type": "delta", "text": "done"}
+            yield {"type": "done", "usage": {}}
+
+    adapter = CaptureAdapter()
+    with TestClient(create_app(settings, adapter=adapter)) as client:
+        assert "gpt-5.4" in client.get("/api/settings").json()["available_models"]
+        assert client.put("/api/settings", json={"model": "not-allowed"}).status_code == 422
+        assert client.put("/api/settings", json={"model": "gpt-5.4"}).status_code == 200
+        book = upload(client)
+        response, body = ask(client, book)
+        assert events(response)[-1][0] == "failed"
+        client.put("/api/settings", json={"model": "gpt-5.4-mini"})
+        retry = client.post(f"/api/books/{book['id']}/chat/{body['request_id']}/retry")
+        assert events(retry)[-1][0] == "completed"
+        assert adapter.models == ["gpt-5.4", "gpt-5.4"]
+        records = client.get(f"/api/books/{book['id']}/messages").json()["items"]
+        assert records[-1]["model"] == "gpt-5.4"
+        assert ask(client, book, model="not-allowed")[0].status_code == 422
+    with TestClient(create_app(settings)) as client:
+        assert client.get("/api/settings").json()["model"] == "gpt-5.4-mini"
+
+
+def test_existing_preferences_survive_model_migration(settings):
+    from alembic import command
+    from alembic.config import Config
+    from sqlalchemy import text
+
+    from app.config import ROOT
+    from app.db import make_engine
+
+    settings.data_dir.mkdir(exist_ok=True)
+    engine = make_engine(settings)
+    config = Config(str(ROOT / "backend/alembic.ini"))
+    config.set_main_option("script_location", str(ROOT / "backend/migrations"))
+    with engine.begin() as connection:
+        config.attributes["connection"] = connection
+        command.upgrade(config, "0001")
+        connection.execute(
+            text(
+                "INSERT INTO app_settings(id, response_style, image_mode) VALUES(1, 'concise', 'always')"
+            )
+        )
+    engine.dispose()
+    with TestClient(create_app(settings)) as client:
+        prefs = client.get("/api/settings").json()
+        assert prefs["response_style"] == "concise"
+        assert prefs["image_mode"] == "always"
