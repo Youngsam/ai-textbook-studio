@@ -463,3 +463,70 @@ with pymupdf.open() as doc:
     await page.request.delete(`/api/books/${book.id}`);
   }
 });
+
+test("scanned contents requires page calibration, navigates, and remembers calibration", async ({
+  page,
+  request,
+}) => {
+  const scannedContents = execFileSync(python, [
+    "-c",
+    `import pymupdf,sys
+with pymupdf.open() as doc:
+ page=doc.new_page()
+ page.insert_text((50,55),'Contents',fontsize=20)
+ for i,title in enumerate(['1 Introduction','1.1 Vector spaces','2 Transformations']):
+  page.insert_text((50,120+i*35),title,fontsize=13)
+  page.insert_text((500,120+i*35),str(i*2+1),fontsize=13)
+ pix=page.get_pixmap(matrix=pymupdf.Matrix(2,2))
+ doc.delete_page(0)
+ page=doc.new_page()
+ page.insert_image(page.rect,pixmap=pix)
+ for i in range(8):
+  page=doc.new_page()
+  page.insert_text((50,100),'This chapter explains vector spaces and linear transformations.')
+ sys.stdout.buffer.write(doc.tobytes(deflate=True))`,
+  ]);
+  const response = await request.post("/api/books", {
+    multipart: {
+      title: `Scan contents ${Date.now()}`,
+      file: {
+        name: "contents.pdf",
+        mimeType: "application/pdf",
+        buffer: scannedContents,
+      },
+    },
+  });
+  expect(response.status()).toBe(201);
+  const book = await response.json();
+  try {
+    await page.goto(`/books/${book.id}`);
+    await page.locator(".outline-control summary").click();
+    const menu = page.getByRole("navigation", { name: "PDF 목차" });
+    const chapter = menu.getByRole("button", { name: /Vector spaces/ });
+    await expect(chapter).toBeDisabled();
+    const correction = menu.getByLabel("쪽수 보정 (PDF − 인쇄)");
+    await correction.fill("999");
+    await expect(chapter).toBeDisabled();
+    await correction.fill("1");
+    await expect(chapter).toBeEnabled();
+    await expect(chapter).toContainText("PDF 4");
+    await page.screenshot({ path: `${root}/.cache/qa-contents.png` });
+    await chapter.click();
+    await expect(page.getByLabel("현재 페이지", { exact: true })).toHaveValue(
+      "4",
+    );
+    await expect(page.locator(".reader-save")).toContainText("저장됨");
+    await page.reload();
+    await page.locator(".outline-control summary").click();
+    await expect(correction).toHaveValue("1");
+    await correction.fill("-1");
+    await expect(
+      menu.getByRole("button", { name: /Introduction/ }),
+    ).toBeDisabled();
+    await expect(chapter).toContainText("PDF 2");
+    await correction.fill("");
+    await expect(chapter).toBeDisabled();
+  } finally {
+    await request.delete(`/api/books/${book.id}`);
+  }
+});

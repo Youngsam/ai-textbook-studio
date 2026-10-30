@@ -46,6 +46,10 @@ class Settings(BaseSettings):
     max_upload_bytes: int = 500 * 1024 * 1024
     max_pdf_pages: int = 2000
     pdf_process_timeout_seconds: float = 30
+    outline_timeout_seconds: float = 120
+    outline_max_pages: int = Field(default=24, ge=1, le=100)
+    ocr_language: str = "kor+eng"
+    ocr_tessdata: str = str(ROOT / ".cache" / "tessdata")
     allowed_hosts: str = "localhost,127.0.0.1,[::1],testserver"
     allowed_origins: str = (
         "http://localhost:5173,http://127.0.0.1:5173,http://127.0.0.1:8000,http://localhost:8000"

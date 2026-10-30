@@ -1393,3 +1393,19 @@ button.primary:hover:not(:disabled) {
   width: auto;
   flex: none;
 }
+
+.outline-offset {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  font-size: 12px;
+}
+.outline-offset input {
+  width: 85px;
+  padding: 5px;
+}
+.outline-menu > button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}

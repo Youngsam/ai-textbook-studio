@@ -807,3 +807,25 @@ def test_automatic_backup_worker_runs_without_browser(settings, tmp_path, monkey
         assert len(list(target.glob("textbook-studio-*"))) == 1
     finally:
         shutil.rmtree(target, ignore_errors=True)
+
+
+def test_extracted_outline_endpoint_cache_and_recovery(client, settings):
+    from tests.test_outline import document_with_contents
+
+    with document_with_contents() as document:
+        book = upload(client, pdf=document.tobytes())
+    url = f"/api/books/{book['id']}/outline"
+    result = client.get(url)
+    assert result.status_code == 200
+    assert [i["page"] for i in result.json()["items"]] == [2, 4, 6]
+    cache = settings.data_dir / "books" / book["id"] / "outline-v1.json"
+    assert cache.exists()
+    assert client.get(url).json() == result.json()
+    # Older recognition rules may have cached a plausible but truncated outline.
+    stored = json.loads(cache.read_text())
+    stored["version"] = 1
+    stored["result"] = {"items": []}
+    cache.write_text(json.dumps(stored))
+    assert client.get(url).json() == result.json()
+    cache.write_text("interrupted cache")
+    assert client.get(url).json() == result.json()

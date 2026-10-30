@@ -1,14 +1,19 @@
 """PDF work runs in a bounded child process; documents never cross process boundaries."""
 
 import asyncio
+import json
 import multiprocessing
 import time
 from pathlib import Path
 
 import pymupdf
 
+from app.outline import detect_outline
 
-def _worker(pipe, operation, path, page, image_path):
+OUTLINE_CACHE_VERSION = 2
+
+
+def _worker(pipe, operation, path, page, image_path, outline_options):
     try:
         with pymupdf.open(path) as document:
             if document.needs_pass or not document.is_pdf or document.page_count < 1:
@@ -16,13 +21,34 @@ def _worker(pipe, operation, path, page, image_path):
             if operation == "inspect":
                 result = {"page_count": document.page_count}
             elif operation == "outline":
-                result = {
-                    "items": [
-                        {"level": level, "title": title, "page": target}
-                        for level, title, target in document.get_toc()
-                        if 1 <= target <= document.page_count
-                    ]
-                }
+                cache = Path(path).with_name("outline-v1.json")
+                try:
+                    stored = json.loads(cache.read_text())
+                    result = (
+                        stored["result"]
+                        if (
+                            stored.get("version") == OUTLINE_CACHE_VERSION
+                            and stored["options"] == outline_options
+                        )
+                        else None
+                    )
+                except (OSError, ValueError, KeyError, TypeError):
+                    result = None
+                if result is None:
+                    result = detect_outline(document, **outline_options)
+                    if result.get("status") != "ocr_unavailable":
+                        temporary = cache.with_suffix(".tmp")
+                        temporary.write_text(
+                            json.dumps(
+                                {
+                                    "version": OUTLINE_CACHE_VERSION,
+                                    "options": outline_options,
+                                    "result": result,
+                                },
+                                ensure_ascii=False,
+                            )
+                        )
+                        temporary.replace(cache)
             else:
                 current = document[page - 1]
                 result = {"text": current.get_text(sort=True)}
@@ -46,8 +72,10 @@ def _worker(pipe, operation, path, page, image_path):
 
 
 class PdfService:
-    def __init__(self, timeout):
+    def __init__(self, timeout, *, outline_timeout=120, outline_options=None):
         self.timeout = timeout
+        self.outline_timeout = outline_timeout
+        self.outline_options = outline_options or {}
         self.lock = asyncio.Semaphore(1)
 
     async def run(self, operation, path, page=1, image_path=None):
@@ -55,11 +83,14 @@ class PdfService:
             context = multiprocessing.get_context("spawn")
             reader, writer = context.Pipe(duplex=False)
             process = context.Process(
-                target=_worker, args=(writer, operation, str(path), page, image_path)
+                target=_worker,
+                args=(writer, operation, str(path), page, image_path, self.outline_options),
             )
             process.start()
             writer.close()
-            deadline = time.monotonic() + self.timeout
+            deadline = time.monotonic() + (
+                self.outline_timeout if operation == "outline" else self.timeout
+            )
             try:
                 while not reader.poll():
                     if time.monotonic() >= deadline:

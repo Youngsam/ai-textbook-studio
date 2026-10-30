@@ -15,7 +15,17 @@ export type ReadingState = {
 };
 export type Provider = "openai" | "claude" | "gemini" | "openrouter" | "fake";
 export type Outline = {
-  items: { level: number; title: string; page: number }[];
+  items: {
+    level: number;
+    title: string;
+    page: number | null;
+    printed_page?: number;
+  }[];
+  source?: "ocr" | "text";
+  status?: "ocr_unavailable";
+  mapping_verified?: boolean;
+  page_offset?: number | null;
+  scanned_pages?: number;
 };
 export type Preferences = {
   provider: Provider;

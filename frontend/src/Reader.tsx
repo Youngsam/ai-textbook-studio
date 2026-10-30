@@ -146,6 +146,23 @@ function ReadingRoom({
     message: string;
   } | null>(null);
   const [showOutline, setShowOutline] = useState(false);
+  const [outlinePageOffset, setOutlinePageOffset] = useState(() => {
+    try {
+      return (
+        localStorage.getItem(
+          `textbook-studio.outline-page-offset.${book.id}`,
+        ) || ""
+      );
+    } catch {
+      return "";
+    }
+  });
+  const outlineOffset =
+    outlinePageOffset !== "" &&
+    Number.isInteger(Number(outlinePageOffset)) &&
+    Math.abs(Number(outlinePageOffset)) <= 99999
+      ? Number(outlinePageOffset)
+      : null;
   const outline = useQuery({
     queryKey: ["outline", book.id],
     queryFn: () => api<Outline>(`/books/${book.id}/outline`),
@@ -433,7 +450,12 @@ function ReadingRoom({
                 aria-label="PDF 목차"
               >
                 <strong>목차 바로가기</strong>
-                {outline.isPending && <p role="status">목차를 불러오는 중…</p>}
+                {outline.isPending && (
+                  <p role="status">
+                    목차를 확인하는 중… 스캔 문서는 최대 2분 정도 걸릴 수
+                    있습니다.
+                  </p>
+                )}
                 {outline.isError && (
                   <p role="alert">
                     {outline.error.message}{" "}
@@ -442,26 +464,99 @@ function ReadingRoom({
                 )}
                 {outline.data?.items.length === 0 && (
                   <p>
-                    이 PDF에는 내장 목차가 없습니다. 왼쪽 페이지 번호로 이동할
-                    수 있습니다.
+                    문서 앞부분에서 인식할 수 있는 목차를 찾지 못했습니다. 왼쪽
+                    페이지 번호로 이동할 수 있습니다.
                   </p>
                 )}
-                {outline.data?.items.map((item, index) => (
-                  <button
-                    key={index}
-                    style={{
-                      paddingLeft: `${12 + Math.min(item.level - 1, 8) * 14}px`,
-                    }}
-                    onClick={() => {
-                      pageTo(item.page);
-                      setShowOutline(false);
-                      outlineControl.current?.querySelector("summary")?.focus();
-                    }}
-                  >
-                    <span>{item.title}</span>
-                    <small>{item.page}쪽</small>
-                  </button>
-                ))}
+                {outline.data?.status === "ocr_unavailable" && (
+                  <p role="status">
+                    스캔 목차를 읽을 OCR 언어 데이터가 없거나 OCR 처리에
+                    실패했습니다. 서버에서 make install-ocr 실행 후 재시도해
+                    주세요.
+                    <button onClick={() => outline.refetch()}>재시도</button>
+                  </p>
+                )}
+                {outline.data?.source && (
+                  <>
+                    <p>
+                      문서에서 추출한 목차입니다. 인쇄 쪽수와 이동 위치를 확인해
+                      주세요.
+                    </p>
+                    <label className="outline-offset">
+                      쪽수 보정 (PDF − 인쇄)
+                      <input
+                        type="number"
+                        min={-99999}
+                        max={99999}
+                        placeholder={
+                          outline.data.mapping_verified
+                            ? String(outline.data.page_offset ?? 0)
+                            : "보정 필요"
+                        }
+                        value={outlinePageOffset}
+                        onChange={(event) => {
+                          const value = event.target.value;
+                          setOutlinePageOffset(value);
+                          try {
+                            localStorage.setItem(
+                              `textbook-studio.outline-page-offset.${book.id}`,
+                              value,
+                            );
+                          } catch {
+                            /* Reading remains available without browser storage. */
+                          }
+                        }}
+                      />
+                    </label>
+                    <p>
+                      예: PDF 10쪽이 인쇄 1쪽이면 9를 입력합니다. 비우면 자동
+                      보정을 사용합니다.
+                    </p>
+                    {!outline.data.mapping_verified &&
+                      outlineOffset === null && (
+                        <p>쪽수 보정값을 입력하면 목차로 이동할 수 있습니다.</p>
+                      )}
+                  </>
+                )}
+                {outline.data?.items.map((item, index) => {
+                  const target =
+                    item.printed_page !== undefined && outlineOffset !== null
+                      ? item.printed_page + outlineOffset
+                      : outlinePageOffset !== "" &&
+                          outlineOffset === null &&
+                          item.printed_page !== undefined
+                        ? null
+                        : item.page;
+                  const valid =
+                    target !== null && target >= 1 && target <= book.page_count;
+                  return (
+                    <button
+                      key={index}
+                      disabled={!valid}
+                      style={{
+                        paddingLeft: `${12 + Math.min(item.level - 1, 8) * 14}px`,
+                      }}
+                      onClick={() => {
+                        if (!valid || target === null) return;
+                        pageTo(target);
+                        setShowOutline(false);
+                        outlineControl.current
+                          ?.querySelector("summary")
+                          ?.focus();
+                      }}
+                    >
+                      <span>{item.title}</span>
+                      <small>
+                        {item.printed_page !== undefined
+                          ? `인쇄 ${item.printed_page}쪽`
+                          : `${item.page}쪽`}
+                        {item.printed_page !== undefined && valid
+                          ? ` · PDF ${target}`
+                          : ""}
+                      </small>
+                    </button>
+                  );
+                })}
               </nav>
             </details>
             <div className="zoom-controls">

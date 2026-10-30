@@ -1,8 +1,12 @@
-.PHONY: install dev build serve up down restart status logs test test-live
+.PHONY: install install-ocr dev build serve up down restart status logs test test-live
 
 install:
 	cd backend && uv sync --locked --cache-dir ../.cache/uv
 	cd frontend && npm ci --cache ../.cache/npm
+	$(MAKE) install-ocr
+
+install-ocr:
+	python3 scripts/setup_ocr.py
 
 dev:
 	python3 scripts/dev.py

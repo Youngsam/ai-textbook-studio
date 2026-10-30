@@ -88,7 +88,15 @@ def create_app(settings: Settings | None = None, adapter=None):
     settings = settings or Settings()
     engine = make_engine(settings)
     Session = sessions(engine)
-    pdf = PdfService(settings.pdf_process_timeout_seconds)
+    pdf = PdfService(
+        settings.pdf_process_timeout_seconds,
+        outline_timeout=settings.outline_timeout_seconds,
+        outline_options={
+            "language": settings.ocr_language,
+            "tessdata": settings.ocr_tessdata,
+            "max_pages": settings.outline_max_pages,
+        },
+    )
     backup_lock = Lock()
 
     def folder(book_id):
