@@ -14,6 +14,7 @@ import {
   BookOpen,
   ChevronLeft,
   ChevronRight,
+  List,
   MessageSquare,
   Minus,
   Plus,
@@ -28,6 +29,8 @@ import {
   type Book,
   type Message,
   type Page,
+  type Outline,
+  type Provider,
   type ReadingState,
   type Settings,
 } from "./api";
@@ -106,11 +109,48 @@ function ReadingRoom({
   const [selection, setSelection] = useState("");
   const [question, setQuestion] = useState("");
   const [preferences, setPreferences] = useState({
+    provider: settings.provider,
     image_mode: settings.image_mode,
     response_style: settings.response_style,
     model: settings.model,
   });
   const [showSettings, setShowSettings] = useState(false);
+  const [modelDraft, setModelDraft] = useState({
+    provider: settings.provider,
+    model: settings.model,
+  });
+  const [testingModel, setTestingModel] = useState(false);
+  const [modelResult, setModelResult] = useState<{
+    ok: boolean;
+    message: string;
+  } | null>(null);
+  const [showOutline, setShowOutline] = useState(false);
+  const outline = useQuery({
+    queryKey: ["outline", book.id],
+    queryFn: () => api<Outline>(`/books/${book.id}/outline`),
+    enabled: showOutline,
+    staleTime: Infinity,
+  });
+  const outlineControl = useRef<HTMLDetailsElement>(null);
+  useEffect(() => {
+    if (!showOutline) return;
+    const close = (event: PointerEvent) => {
+      if (!outlineControl.current?.contains(event.target as Node))
+        setShowOutline(false);
+    };
+    const escape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setShowOutline(false);
+        outlineControl.current?.querySelector("summary")?.focus();
+      }
+    };
+    document.addEventListener("pointerdown", close);
+    document.addEventListener("keydown", escape);
+    return () => {
+      document.removeEventListener("pointerdown", close);
+      document.removeEventListener("keydown", escape);
+    };
+  }, [showOutline]);
   const [savingPreferences, setSavingPreferences] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -159,15 +199,39 @@ function ReadingRoom({
         body: JSON.stringify(next),
       });
       setPreferences({
+        provider: saved.provider,
         image_mode: saved.image_mode,
         response_style: saved.response_style,
         model: saved.model,
       });
       await client.invalidateQueries({ queryKey: ["settings"] });
+      return true;
     } catch (e) {
       setError((e as Error).message);
     } finally {
       setSavingPreferences(false);
+    }
+  }
+
+  async function testModel() {
+    setTestingModel(true);
+    setModelResult(null);
+    try {
+      const result = await api<{ ok: boolean; message: string }>(
+        "/settings/test",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            ...modelDraft,
+            model: modelDraft.model.trim(),
+          }),
+        },
+      );
+      setModelResult(result);
+    } catch (e) {
+      setModelResult({ ok: false, message: (e as Error).message });
+    } finally {
+      setTestingModel(false);
     }
   }
 
@@ -326,9 +390,59 @@ function ReadingRoom({
                 <ChevronRight size={18} />
               </button>
             </div>
-            <span className="toolbar-hint">
-              문장을 선택해 AI에게 질문하세요
-            </span>
+            <details
+              className="outline-control"
+              ref={outlineControl}
+              open={showOutline}
+            >
+              <summary
+                onClick={(event) => {
+                  event.preventDefault();
+                  setShowOutline(!showOutline);
+                }}
+                aria-expanded={showOutline}
+                aria-controls="pdf-outline"
+              >
+                <List size={16} />
+                <span>목차</span>
+              </summary>
+              <nav
+                id="pdf-outline"
+                className="outline-menu"
+                aria-label="PDF 목차"
+              >
+                <strong>목차 바로가기</strong>
+                {outline.isPending && <p role="status">목차를 불러오는 중…</p>}
+                {outline.isError && (
+                  <p role="alert">
+                    {outline.error.message}{" "}
+                    <button onClick={() => outline.refetch()}>재시도</button>
+                  </p>
+                )}
+                {outline.data?.items.length === 0 && (
+                  <p>
+                    이 PDF에는 내장 목차가 없습니다. 왼쪽 페이지 번호로 이동할
+                    수 있습니다.
+                  </p>
+                )}
+                {outline.data?.items.map((item, index) => (
+                  <button
+                    key={index}
+                    style={{
+                      paddingLeft: `${12 + Math.min(item.level - 1, 8) * 14}px`,
+                    }}
+                    onClick={() => {
+                      pageTo(item.page);
+                      setShowOutline(false);
+                      outlineControl.current?.querySelector("summary")?.focus();
+                    }}
+                  >
+                    <span>{item.title}</span>
+                    <small>{item.page}쪽</small>
+                  </button>
+                ))}
+              </nav>
+            </details>
             <div className="zoom-controls">
               <button
                 className="icon-button"
@@ -416,36 +530,97 @@ function ReadingRoom({
             <section className="settings-panel">
               <strong>AI 설정</strong>
               <p>
-                {settings.provider === "fake"
-                  ? "테스트 어댑터 · 실제 AI 응답 아님"
-                  : `OpenAI · ${settings.model || "모델 미설정"}`}
+                현재: {settings.provider} · {settings.model || "모델 미설정"}
               </p>
               <label>
-                설명 모델
+                제공업체
                 <select
-                  value={preferences.model}
-                  disabled={busy || activeRemote || savingPreferences}
-                  onChange={(event) =>
-                    savePreferences({
-                      ...preferences,
-                      model: event.target.value,
-                    })
+                  aria-label="제공업체"
+                  value={modelDraft.provider}
+                  disabled={
+                    busy || activeRemote || savingPreferences || testingModel
                   }
+                  onChange={(event) => {
+                    setModelDraft({
+                      provider: event.target.value as Provider,
+                      model: "",
+                    });
+                    setModelResult(null);
+                  }}
                 >
-                  {!preferences.model && (
-                    <option value="" disabled>
-                      모델을 선택하세요
-                    </option>
+                  <option value="openai">OpenAI</option>
+                  <option value="claude">Claude (Anthropic)</option>
+                  <option value="gemini">Gemini (Google)</option>
+                  <option value="openrouter">OpenRouter</option>
+                  {settings.provider === "fake" && (
+                    <option value="fake">테스트 모드</option>
                   )}
-                  {(settings.available_models ?? [settings.model])
-                    .filter(Boolean)
-                    .map((model) => (
-                      <option key={model} value={model}>
-                        {model}
-                      </option>
-                    ))}
                 </select>
               </label>
+              <label>
+                설명 모델
+                <input
+                  value={modelDraft.model}
+                  maxLength={200}
+                  placeholder="모델 ID를 입력하세요"
+                  disabled={
+                    busy || activeRemote || savingPreferences || testingModel
+                  }
+                  onChange={(event) => {
+                    setModelDraft({ ...modelDraft, model: event.target.value });
+                    setModelResult(null);
+                  }}
+                />
+              </label>
+              <div className="model-actions">
+                <button
+                  disabled={
+                    !modelDraft.model.trim() ||
+                    modelDraft.provider === "fake" ||
+                    testingModel ||
+                    savingPreferences
+                  }
+                  onClick={testModel}
+                >
+                  {testingModel ? "테스트 중…" : "연결 테스트"}
+                </button>
+                <button
+                  disabled={
+                    !modelDraft.model.trim() ||
+                    busy ||
+                    activeRemote ||
+                    savingPreferences ||
+                    testingModel
+                  }
+                  onClick={async () => {
+                    if (
+                      await savePreferences({
+                        ...preferences,
+                        ...modelDraft,
+                        model: modelDraft.model.trim(),
+                      })
+                    )
+                      setModelResult({
+                        ok: true,
+                        message: "제공업체와 모델을 저장했습니다.",
+                      });
+                  }}
+                >
+                  설정 저장
+                </button>
+              </div>
+              <p>
+                테스트는 책 내용 없이 짧은 요청을 보내며 API 사용량이 발생할 수
+                있습니다. API 키는 서버 .env에 설정합니다.
+              </p>
+              {modelResult && (
+                <div
+                  className={modelResult.ok ? "model-success" : "error"}
+                  role="status"
+                >
+                  {modelResult.message}
+                </div>
+              )}
               <label>
                 응답 스타일
                 <select
@@ -484,8 +659,8 @@ function ReadingRoom({
           )}
           {!settings.llm_configured && (
             <div className="config-notice">
-              AI 설정이 필요합니다. 서버의 .env에 OPENAI_API_KEY와 LLM_MODEL을
-              지정해 주세요. PDF 읽기는 계속 사용할 수 있습니다.
+              AI 설정에서 제공업체와 모델명을 저장하고, 해당 API 키를 서버
+              .env에 지정해 주세요. PDF 읽기는 계속 사용할 수 있습니다.
             </div>
           )}
           {settings.provider === "fake" && (

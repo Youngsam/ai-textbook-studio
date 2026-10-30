@@ -15,6 +15,14 @@ def _worker(pipe, operation, path, page, image_path):
                 raise ValueError("invalid_pdf")
             if operation == "inspect":
                 result = {"page_count": document.page_count}
+            elif operation == "outline":
+                result = {
+                    "items": [
+                        {"level": level, "title": title, "page": target}
+                        for level, title, target in document.get_toc()
+                        if 1 <= target <= document.page_count
+                    ]
+                }
             else:
                 current = document[page - 1]
                 result = {"text": current.get_text(sort=True)}

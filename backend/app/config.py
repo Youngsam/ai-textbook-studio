@@ -18,8 +18,14 @@ class Settings(BaseSettings):
             values = env_settings()
             # An IDE/agent may inject a different API key into the process environment.
             # An explicitly present project key (including a blank value) wins.
-            if "openai_api_key" in dotenv_settings():
-                values.pop("openai_api_key", None)
+            for key in (
+                "openai_api_key",
+                "anthropic_api_key",
+                "gemini_api_key",
+                "openrouter_api_key",
+            ):
+                if key in dotenv_settings():
+                    values.pop(key, None)
             return values
 
         return init_settings, environment, dotenv_settings, file_secret_settings
@@ -27,7 +33,10 @@ class Settings(BaseSettings):
     data_dir: Path = ROOT / "data"
     database_url: str = ""
     openai_api_key: str = Field(default="", repr=False)
-    llm_provider: Literal["openai", "fake"] = "openai"
+    anthropic_api_key: str = Field(default="", repr=False)
+    gemini_api_key: str = Field(default="", repr=False)
+    openrouter_api_key: str = Field(default="", repr=False)
+    llm_provider: Literal["openai", "claude", "gemini", "openrouter", "fake"] = "openai"
     llm_model: str = Field(default="", validation_alias=AliasChoices("LLM_MODEL", "OPENAI_MODEL"))
     llm_allowed_models: str = "gpt-5.4-mini,gpt-5.4"
     llm_supports_images: bool = True
@@ -63,6 +72,16 @@ class Settings(BaseSettings):
             )
         )
 
+    def api_key_for(self, provider):
+        return {
+            "openai": self.openai_api_key,
+            "claude": self.anthropic_api_key,
+            "gemini": self.gemini_api_key,
+            "openrouter": self.openrouter_api_key,
+        }.get(provider, "")
+
     @property
     def llm_configured(self):
-        return self.llm_provider == "fake" or bool(self.openai_api_key and self.llm_model)
+        return self.llm_provider == "fake" or bool(
+            self.api_key_for(self.llm_provider) and self.llm_model
+        )

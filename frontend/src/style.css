@@ -1194,3 +1194,112 @@ button.primary:hover:not(:disabled) {
     font-size: 8px;
   }
 }
+
+/* Keep the outline reachable between page and zoom controls at every width. */
+.reader-toolbar {
+  position: relative;
+}
+.outline-control {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 5;
+}
+.outline-control summary {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 7px;
+  border-radius: 6px;
+  list-style: none;
+}
+.outline-control summary::-webkit-details-marker {
+  display: none;
+}
+.outline-control summary:hover {
+  background: #e7ecdf;
+}
+.outline-control summary:focus-visible {
+  outline: 2px solid #37593d;
+}
+.outline-menu {
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(340px, 85vw);
+  max-height: min(440px, 65vh);
+  overflow: auto;
+  background: #fafaf6;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 8px 25px #0002;
+  padding: 12px;
+}
+.outline-menu strong {
+  display: block;
+  font-size: 13px;
+  padding: 6px 10px;
+}
+.outline-menu p {
+  font-size: 12px;
+  padding: 10px;
+  line-height: 1.6;
+}
+.outline-menu > button {
+  width: 100%;
+  display: flex;
+  text-align: left;
+  align-items: baseline;
+  gap: 12px;
+  justify-content: space-between;
+  padding: 9px 8px;
+  border: 0;
+  background: transparent;
+  font-size: 12px;
+}
+.outline-menu > button:hover {
+  background: #e7ecdf;
+}
+.outline-menu > button span {
+  overflow-wrap: anywhere;
+}
+.outline-menu small {
+  white-space: nowrap;
+  color: #78836e;
+}
+.settings-panel input {
+  font-size: 11px;
+  padding: 6px;
+  min-width: 0;
+}
+.model-actions {
+  display: flex;
+  gap: 8px;
+}
+.model-actions button {
+  padding: 6px 10px;
+  font-size: 11px;
+}
+.model-success {
+  color: #37593d;
+  font-size: 11px;
+}
+@media (max-width: 450px) {
+  .reader-toolbar {
+    gap: 4px;
+    padding: 0 8px;
+  }
+  .page-controls {
+    gap: 2px;
+  }
+  .page-controls input {
+    width: 38px;
+  }
+  .outline-control summary {
+    gap: 2px;
+    padding: 4px;
+  }
+}

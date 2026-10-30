@@ -376,7 +376,7 @@ def test_selected_model_persists_and_reaches_chat_and_retry(settings):
     adapter = CaptureAdapter()
     with TestClient(create_app(settings, adapter=adapter)) as client:
         assert "gpt-5.4" in client.get("/api/settings").json()["available_models"]
-        assert client.put("/api/settings", json={"model": "not-allowed"}).status_code == 422
+        assert client.put("/api/settings", json={"model": "custom-model"}).status_code == 200
         assert client.put("/api/settings", json={"model": "gpt-5.4"}).status_code == 200
         book = upload(client)
         response, body = ask(client, book)
@@ -387,7 +387,7 @@ def test_selected_model_persists_and_reaches_chat_and_retry(settings):
         assert adapter.models == ["gpt-5.4", "gpt-5.4"]
         records = client.get(f"/api/books/{book['id']}/messages").json()["items"]
         assert records[-1]["model"] == "gpt-5.4"
-        assert ask(client, book, model="not-allowed")[0].status_code == 422
+        assert ask(client, book, model="custom-model")[0].status_code == 200
     with TestClient(create_app(settings)) as client:
         assert client.get("/api/settings").json()["model"] == "gpt-5.4-mini"
 
@@ -417,3 +417,141 @@ def test_existing_preferences_survive_model_migration(settings):
         prefs = client.get("/api/settings").json()
         assert prefs["response_style"] == "concise"
         assert prefs["image_mode"] == "always"
+
+
+def test_pdf_outline_and_empty_outline(client):
+    with pymupdf.open(stream=make_pdf(), filetype="pdf") as document:
+        document.set_toc([[1, "Chapter one", 1], [2, "Vectors", 3]])
+        book = upload(client, pdf=document.tobytes())
+    assert client.get(f"/api/books/{book['id']}/outline").json() == {
+        "items": [
+            {"level": 1, "title": "Chapter one", "page": 1},
+            {"level": 2, "title": "Vectors", "page": 3},
+        ]
+    }
+    plain = upload(client)
+    assert client.get(f"/api/books/{plain['id']}/outline").json() == {"items": []}
+    assert client.get(f"/api/books/{uuid4()}/outline").status_code == 404
+
+
+def test_provider_persistence_and_retry(settings, monkeypatch):
+    selected = []
+
+    class Capture:
+        async def stream(self, context):
+            selected.append(context.model)
+            if len(selected) == 1:
+                raise RuntimeError("synthetic failure")
+            yield {"type": "delta", "text": "done"}
+            yield {"type": "done", "usage": {}}
+
+    providers = []
+
+    def factory(config, provider):
+        providers.append(provider)
+        return Capture()
+
+    monkeypatch.setattr("app.main.make_adapter", factory)
+    settings.anthropic_api_key = "synthetic-claude-key"
+    settings.gemini_api_key = "synthetic-gemini-key"
+    with TestClient(create_app(settings)) as client:
+        assert (
+            client.put(
+                "/api/settings",
+                json={
+                    "provider": "claude",
+                    "model": "claude-custom",
+                },
+            ).json()["llm_configured"]
+            is True
+        )
+        book = upload(client)
+        response, body = ask(client, book)
+        assert events(response)[-1][0] == "failed"
+        client.put("/api/settings", json={"provider": "gemini", "model": "gemini-custom"})
+        retry = client.post(f"/api/books/{book['id']}/chat/{body['request_id']}/retry")
+        assert events(retry)[-1][0] == "completed"
+        assert providers == ["claude", "claude"]
+        assert selected == ["claude-custom", "claude-custom"]
+        records = client.get(f"/api/books/{book['id']}/messages").json()["items"]
+        assert records[-1]["provider"] == "claude"
+    with TestClient(create_app(settings)) as client:
+        result = client.get("/api/settings")
+        assert result.json()["provider"] == "gemini"
+        assert result.json()["model"] == "gemini-custom"
+        assert "synthetic-" not in result.text
+        assert client.put("/api/settings", json={"provider": "unknown"}).status_code == 422
+
+
+def test_model_probe_does_not_save_or_send_book_content(settings, monkeypatch):
+    settings.llm_provider = "openai"
+    settings.openrouter_api_key = "synthetic-router-key"
+    closed = []
+
+    class Probe:
+        async def stream(self, context):
+            assert context.prompt == "Reply with OK."
+            assert context.image_url is None and context.history == []
+            assert context.model == "vendor/custom"
+            try:
+                yield {"type": "delta", "text": "OK"}
+            finally:
+                closed.append(True)
+
+    monkeypatch.setattr("app.main.make_adapter", lambda config, provider: Probe())
+    with TestClient(create_app(settings)) as client:
+        before = client.get("/api/settings").json()
+        response = client.post(
+            "/api/settings/test",
+            json={
+                "provider": "openrouter",
+                "model": "vendor/custom",
+            },
+        )
+        assert response.json()["ok"] is True
+        assert closed == [True]
+        assert client.get("/api/settings").json() == before
+        assert (
+            client.post(
+                "/api/settings/test",
+                json={
+                    "provider": "gemini",
+                    "model": "test",
+                },
+            ).json()["detail"]["code"]
+            == "missing_api_key"
+        )
+        assert (
+            client.post(
+                "/api/settings/test",
+                json={
+                    "provider": "openrouter",
+                    "model": " ",
+                },
+            ).status_code
+            == 422
+        )
+
+
+def test_probe_provider_errors_are_safe(settings, monkeypatch):
+    import httpx
+    from openai import AuthenticationError
+
+    settings.llm_provider = "openai"
+    settings.openai_api_key = "synthetic-key"
+
+    class Broken:
+        async def stream(self, context):
+            raise AuthenticationError(
+                "secret-provider-error",
+                response=httpx.Response(401, request=httpx.Request("POST", "https://test")),
+                body=None,
+            )
+            yield
+
+    monkeypatch.setattr("app.main.make_adapter", lambda config, provider: Broken())
+    with TestClient(create_app(settings)) as client:
+        response = client.post("/api/settings/test", json={"provider": "openai", "model": "test"})
+        assert response.status_code == 422
+        assert response.json()["detail"]["code"] == "provider_authentication"
+        assert "secret-provider-error" not in response.text

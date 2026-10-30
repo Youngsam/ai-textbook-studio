@@ -13,13 +13,17 @@ export type ReadingState = {
   zoom: number;
   scroll_offset: number;
 };
+export type Provider = "openai" | "claude" | "gemini" | "openrouter" | "fake";
+export type Outline = {
+  items: { level: number; title: string; page: number }[];
+};
 export type Preferences = {
+  provider: Provider;
   response_style: "step_by_step" | "concise";
   image_mode: "auto" | "always" | "never";
   model: string;
 };
 export type Settings = Preferences & {
-  provider: string;
   model: string;
   available_models: string[];
   llm_configured: boolean;

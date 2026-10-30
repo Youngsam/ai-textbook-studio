@@ -64,6 +64,72 @@ class OpenAIAdapter:
                         raise RuntimeError("provider_failed")
 
 
+class CompatibleAdapter:
+    """Text and image streaming through providers' official OpenAI-compatible APIs."""
+
+    URLS = {
+        "claude": "https://api.anthropic.com/v1/",
+        "gemini": "https://generativelanguage.googleapis.com/v1beta/openai/",
+        "openrouter": "https://openrouter.ai/api/v1",
+    }
+
+    def __init__(self, settings: Settings, provider: str):
+        self.settings, self.provider = settings, provider
+
+    async def stream(self, context: ChatContext):
+        async with AsyncOpenAI(
+            api_key=self.settings.api_key_for(self.provider),
+            base_url=self.URLS[self.provider],
+            timeout=self.settings.llm_timeout_seconds,
+            max_retries=0,
+        ) as client:
+            content = [{"type": "text", "text": context.prompt}]
+            if context.image_url:
+                content.append({"type": "image_url", "image_url": {"url": context.image_url}})
+            stream = await client.chat.completions.create(
+                model=context.model or self.settings.llm_model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": INSTRUCTIONS
+                        + (
+                            "\n간결하게 답변한다."
+                            if context.style == "concise"
+                            else "\n단계별로 설명한다."
+                        ),
+                    },
+                    *context.history,
+                    {"role": "user", "content": content},
+                ],
+                max_tokens=self.settings.llm_max_output_tokens,
+                stream=True,
+                stream_options={"include_usage": True},
+            )
+            finished, usage = False, {}
+            async with stream:
+                async for event in stream:
+                    if event.usage:
+                        usage = event.usage.model_dump()
+                    for choice in event.choices:
+                        if choice.delta.content:
+                            yield {"type": "delta", "text": choice.delta.content}
+                        if choice.finish_reason:
+                            if choice.finish_reason != "stop":
+                                raise RuntimeError("provider_incomplete")
+                            finished = True
+            if not finished:
+                raise RuntimeError("incomplete_stream")
+            yield {"type": "done", "usage": usage}
+
+
+def make_adapter(settings: Settings, provider: str):
+    if settings.llm_provider == "fake" or provider == "fake":
+        return FakeAdapter()
+    if provider == "openai":
+        return OpenAIAdapter(settings)
+    return CompatibleAdapter(settings, provider)
+
+
 class FakeAdapter:
     """Explicit test mode. Never masquerades as a model-generated explanation."""
 

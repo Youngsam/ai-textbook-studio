@@ -107,3 +107,4 @@ class AppSettings(Base):
     response_style: Mapped[str] = mapped_column(default="step_by_step")
     image_mode: Mapped[str] = mapped_column(default="auto")
     model: Mapped[str] = mapped_column(default="")
+    provider: Mapped[str] = mapped_column(default="")

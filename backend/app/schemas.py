@@ -11,10 +11,26 @@ class ReaderState(BaseModel):
     scroll_offset: float = Field(default=0, ge=0, le=1)
 
 
+Provider = Literal["openai", "claude", "gemini", "openrouter", "fake"]
+
+
+class ModelSelection(BaseModel):
+    provider: Provider
+    model: str = Field(min_length=1, max_length=200, pattern=r"^\S+(?:[^\r\n]*\S)?$", strict=True)
+
+
 class Preferences(BaseModel):
+    provider: Provider | None = None
     response_style: Literal["step_by_step", "concise"] = "step_by_step"
     image_mode: Literal["auto", "always", "never"] = "auto"
     model: str | None = Field(default=None, max_length=200)
+
+    @field_validator("model")
+    @classmethod
+    def clean_model(cls, value):
+        if value is not None and ("\n" in value or "\r" in value):
+            raise ValueError("모델명은 한 줄로 입력해 주세요.")
+        return value.strip() if value is not None else None
 
 
 class Question(Preferences):

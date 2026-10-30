@@ -5,24 +5,24 @@ import json
 import logging
 import shutil
 import time
-from contextlib import asynccontextmanager, suppress
+from contextlib import aclosing, asynccontextmanager, suppress
 from pathlib import Path
 from uuid import UUID, uuid4
 
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from openai import AuthenticationError, RateLimitError
+from openai import APIStatusError, AuthenticationError, RateLimitError
 from sqlalchemy import select, text, update
 from sqlalchemy.exc import IntegrityError
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from app.config import ROOT, Settings
 from app.db import make_engine, migrate, sessions
-from app.llm import INSTRUCTIONS, ChatContext, FakeAdapter, OpenAIAdapter
+from app.llm import INSTRUCTIONS, ChatContext, make_adapter
 from app.models import AppSettings, Book, ChatRequest, Message, ReadingState, Thread, now
 from app.pdf import PdfService
-from app.schemas import Preferences, Question, ReaderState
+from app.schemas import ModelSelection, Preferences, Question, ReaderState
 
 logger = logging.getLogger("studio")
 ACTIVE = ("pending", "streaming")
@@ -154,21 +154,14 @@ def create_app(settings: Settings | None = None, adapter=None):
     def read_settings():
         with Session() as session:
             prefs = session.get(AppSettings, 1)
+            provider = prefs.provider or settings.llm_provider
+            model = prefs.model or settings.llm_model
             return {
-                "provider": settings.llm_provider,
-                "model": prefs.model
-                if prefs.model in settings.available_models
-                else settings.llm_model,
+                "provider": provider,
+                "model": model,
                 "available_models": settings.available_models,
-                "llm_configured": settings.llm_provider == "fake"
-                or bool(
-                    settings.openai_api_key
-                    and (
-                        prefs.model
-                        if prefs.model in settings.available_models
-                        else settings.llm_model
-                    )
-                ),
+                "llm_configured": provider == "fake"
+                or bool(settings.api_key_for(provider) and model),
                 "supports_images": settings.llm_supports_images,
                 "response_style": prefs.response_style,
                 "image_mode": prefs.image_mode,
@@ -177,14 +170,74 @@ def create_app(settings: Settings | None = None, adapter=None):
 
     @app.put("/api/settings")
     def save_settings(body: Preferences):
-        if body.model is not None and body.model not in settings.available_models:
-            fail(422, "model_not_allowed", "선택할 수 없는 모델입니다.")
         with Session.begin() as session:
             prefs = session.get(AppSettings, 1)
             prefs.response_style, prefs.image_mode = body.response_style, body.image_mode
+            if body.provider is not None:
+                if body.provider == "fake" and settings.llm_provider != "fake":
+                    fail(422, "invalid_provider", "테스트 모드는 서버에서만 활성화할 수 있습니다.")
+                prefs.provider = body.provider
             if body.model is not None:
                 prefs.model = body.model
         return read_settings()
+
+    @app.post("/api/settings/test")
+    async def test_model(body: ModelSelection):
+        if settings.llm_provider == "fake" or body.provider == "fake":
+            fail(422, "invalid_provider", "테스트 모드는 실제 모델 연결을 검사하지 않습니다.")
+        if not settings.api_key_for(body.provider):
+            fail(422, "missing_api_key", "선택한 제공업체의 API 키를 서버 .env에 설정해 주세요.")
+        context = ChatContext("Reply with OK.", [], None, "concise", body.model)
+        try:
+            # Use the same streaming path as questions, without sending any book content.
+            async with asyncio.timeout(min(30, settings.llm_timeout_seconds)):
+                async with aclosing(
+                    make_adapter(settings, body.provider).stream(context)
+                ) as stream:
+                    async for event in stream:
+                        if event["type"] == "delta" and event["text"].strip():
+                            return {
+                                "ok": True,
+                                "message": "텍스트 응답을 확인했습니다. 이미지 지원 여부는 별도입니다.",
+                            }
+            fail(502, "empty_response", "모델에서 텍스트 응답을 받지 못했습니다.")
+        except AuthenticationError:
+            fail(
+                422,
+                "provider_authentication",
+                "API 키 인증에 실패했습니다. 서버 설정을 확인해 주세요.",
+            )
+        except RateLimitError:
+            fail(429, "provider_rate_limit", "API 사용 한도 또는 잔액을 확인해 주세요.")
+        except APIStatusError as error:
+            if error.status_code in (400, 403, 404):
+                fail(
+                    422,
+                    "model_unavailable",
+                    "모델명, 접근 권한 또는 스트리밍 지원 여부를 확인해 주세요.",
+                )
+            fail(
+                502, "provider_failed", "제공업체 요청에 실패했습니다. 잠시 후 다시 시도해 주세요."
+            )
+        except TimeoutError:
+            fail(504, "timeout", "연결 테스트 시간이 초과되었습니다.")
+        except HTTPException:
+            raise
+        except Exception:
+            fail(
+                502,
+                "provider_failed",
+                "모델 연결에 실패했습니다. 모델명과 서버 연결을 확인해 주세요.",
+            )
+
+    @app.get("/api/books/{book_id}/outline")
+    async def book_outline(book_id: UUID):
+        with Session() as session:
+            get_book(session, book_id)
+        try:
+            return await pdf.run("outline", folder(book_id) / "original.pdf")
+        except (ValueError, TimeoutError):
+            fail(422, "outline_failed", "PDF 목차를 불러오지 못했습니다.")
 
     @app.post("/api/books", status_code=201)
     async def upload_book(file: UploadFile = File(), title: str = Form(), author: str = Form("")):
@@ -459,9 +512,7 @@ def create_app(settings: Settings | None = None, adapter=None):
                 context, snapshot = await build_context(book_id, body)
                 persist(row_id, assistant_id, content, "streaming", snapshot=snapshot)
                 await queue.put(("context", snapshot))
-                llm = adapter or (
-                    FakeAdapter() if settings.llm_provider == "fake" else OpenAIAdapter(settings)
-                )
+                llm = adapter or make_adapter(settings, body.provider or settings.llm_provider)
                 async for event in llm.stream(context):
                     if event["type"] == "delta":
                         content += event["text"]
@@ -573,21 +624,22 @@ def create_app(settings: Settings | None = None, adapter=None):
                 if retry and (row is None or row.status not in ("failed", "interrupted")):
                     fail(409, "retry_not_allowed", "실패하거나 중단된 답변만 재시도할 수 있습니다.")
                 prefs = session.get(AppSettings, 1)
-                selected_model = body.model or (
-                    prefs.model if prefs.model in settings.available_models else settings.llm_model
-                )
-                if selected_model and selected_model not in settings.available_models:
-                    fail(422, "model_not_allowed", "선택할 수 없는 모델입니다.")
-                if settings.llm_provider != "fake" and not (
-                    settings.openai_api_key and selected_model
+                selected_provider = body.provider or prefs.provider or settings.llm_provider
+                selected_model = body.model or prefs.model or settings.llm_model
+                if selected_provider == "fake" and settings.llm_provider != "fake":
+                    fail(422, "invalid_provider", "테스트 모드는 서버에서만 활성화할 수 있습니다.")
+                if selected_provider != "fake" and not (
+                    settings.api_key_for(selected_provider) and selected_model
                 ):
                     fail(
                         503,
                         "llm_not_configured",
-                        "서버 .env에 OPENAI_API_KEY와 LLM_MODEL을 설정해 주세요.",
+                        "선택한 제공업체의 서버 API 키와 모델명을 설정해 주세요.",
                     )
-                body = body.model_copy(update={"model": selected_model})
-                serialized["model"] = selected_model
+                body = body.model_copy(
+                    update={"model": selected_model, "provider": selected_provider}
+                )
+                serialized.update(model=selected_model, provider=selected_provider)
                 thread = session.scalar(select(Thread).where(Thread.book_id == book.id))
                 if retry:
                     row.attempt += 1
@@ -624,7 +676,7 @@ def create_app(settings: Settings | None = None, adapter=None):
                     selected_text=body.selected_text,
                     status="pending",
                     attempt=row.attempt,
-                    provider=settings.llm_provider,
+                    provider=selected_provider,
                     model=selected_model,
                 )
                 session.add(assistant)
@@ -649,7 +701,21 @@ def create_app(settings: Settings | None = None, adapter=None):
             )
             if not row:
                 fail(404, "request_not_found", "질문을 찾을 수 없습니다.")
-            body = Question.model_validate(row.payload)
+            payload = dict(row.payload)
+            if not payload.get("provider"):
+                # Requests saved before provider selection still retain message metadata.
+                original = session.scalar(
+                    select(Message)
+                    .where(
+                        Message.chat_request_id == row.id,
+                        Message.role == "assistant",
+                    )
+                    .order_by(Message.attempt.desc())
+                    .limit(1)
+                )
+                if original and original.provider:
+                    payload["provider"] = original.provider
+            body = Question.model_validate(payload)
         return accept_chat(book_id, body, retry=True)
 
     # API routes are registered first. Never serve HTML for unknown /api paths.
@@ -661,6 +727,10 @@ def create_app(settings: Settings | None = None, adapter=None):
     if dist.is_dir():
         app.mount("/assets", StaticFiles(directory=dist / "assets"), name="assets")
         app.mount("/pdfjs", StaticFiles(directory=dist / "pdfjs"), name="pdfjs")
+
+        @app.get("/favicon.svg", include_in_schema=False)
+        def favicon():
+            return FileResponse(dist / "favicon.svg")
 
         @app.get("/{path:path}")
         def spa(path: str):

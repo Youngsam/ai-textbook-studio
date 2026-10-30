@@ -192,7 +192,8 @@ test("reader side controls, model selection, panel resize, and rich explanations
     await expect(page.locator(".reader-save")).toContainText("저장됨");
 
     await page.getByRole("button", { name: "AI 설정" }).click();
-    await page.getByLabel("설명 모델").selectOption("gpt-5.4");
+    await page.getByLabel("설명 모델").fill("gpt-5.4");
+    await page.getByRole("button", { name: "설정 저장", exact: true }).click();
     await expect
       .poll(
         async () =>
@@ -301,5 +302,96 @@ this is not a valid diagram
         image_mode: "auto",
       },
     });
+  }
+});
+
+test("outline navigation, favicon, and provider model testing", async ({
+  page,
+}) => {
+  const initial = await (await page.request.get("/api/settings")).json();
+  const outlined = execFileSync(python, [
+    "-c",
+    `import pymupdf,sys
+with pymupdf.open() as doc:
+ for i in range(3):
+  doc.new_page().insert_text((60,80),f'Outline page {i+1}')
+ doc.set_toc([[1,'Introduction',1],[2,'Vectors',3]])
+ sys.stdout.buffer.write(doc.tobytes())`,
+  ]);
+  const response = await page.request.post("/api/books", {
+    multipart: {
+      title: "Outline settings test",
+      file: {
+        name: "outline.pdf",
+        mimeType: "application/pdf",
+        buffer: outlined,
+      },
+    },
+  });
+  expect(response.status()).toBe(201);
+  const book = await response.json();
+  try {
+    await page.goto(`/books/${book.id}`);
+    const favicon = await page.request.get("/favicon.svg");
+    expect(favicon.headers()["content-type"]).toContain("image/svg+xml");
+    await page.locator(".outline-control summary").click();
+    await page.getByRole("button", { name: "Vectors 3쪽" }).click();
+    await expect(page.getByLabel("현재 페이지", { exact: true })).toHaveValue(
+      "3",
+    );
+    await expect(page.locator(".outline-menu")).toBeHidden();
+    await expect(page.locator(".reader-save")).toContainText("저장됨");
+    await page.reload();
+    await expect(page.getByLabel("현재 페이지", { exact: true })).toHaveValue(
+      "3",
+    );
+    await page.getByRole("button", { name: "AI 설정" }).click();
+    await page.getByLabel("제공업체", { exact: true }).selectOption("gemini");
+    await page.getByLabel("설명 모델").fill("custom-gemini-model");
+    await page.route("**/api/settings/test", async (route) => {
+      expect(route.request().postDataJSON()).toEqual({
+        provider: "gemini",
+        model: "custom-gemini-model",
+      });
+      await route.fulfill({
+        json: { ok: true, message: "텍스트 응답을 확인했습니다." },
+      });
+    });
+    await page
+      .getByRole("button", { name: "연결 테스트", exact: true })
+      .click();
+    await expect(
+      page.getByRole("status").filter({ hasText: "텍스트 응답" }),
+    ).toBeVisible();
+    expect(
+      (await (await page.request.get("/api/settings")).json()).provider,
+    ).toBe("fake");
+    await page.getByRole("button", { name: "설정 저장", exact: true }).click();
+    await expect(
+      page.getByRole("status").filter({ hasText: "모델을 저장" }),
+    ).toBeVisible();
+    await page.reload();
+    await page.getByRole("button", { name: "AI 설정" }).click();
+    await expect(page.getByLabel("제공업체", { exact: true })).toHaveValue(
+      "gemini",
+    );
+    await expect(page.getByLabel("설명 모델")).toHaveValue(
+      "custom-gemini-model",
+    );
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.locator(".outline-control summary").click();
+    await expect(
+      page.getByRole("navigation", { name: "PDF 목차" }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Vectors 3쪽" }),
+    ).toBeVisible();
+    await page.screenshot({ path: `${root}/.cache/qa-outline-mobile.png` });
+    expect(
+      await page.evaluate(() => document.documentElement.scrollWidth),
+    ).toBeLessThanOrEqual(390);
+  } finally {
+    await page.request.put("/api/settings", { data: initial });
+    await page.request.delete(`/api/books/${book.id}`);
   }
 });
