@@ -18,6 +18,7 @@ import {
   MessageSquare,
   Minus,
   Plus,
+  RotateCcw,
   Settings2,
   Sparkles,
   Square,
@@ -106,6 +107,25 @@ function ReadingRoom({
   const client = useQueryClient();
   const { state, change, status, flush } = useReadingState(book.id, initial);
   const panel = usePanelWidth();
+  const [fontSize, setFontSize] = useState(() => {
+    try {
+      const saved = Number(
+        localStorage.getItem("textbook-studio.chat-font-size"),
+      );
+      return Number.isFinite(saved) && saved >= 10 && saved <= 24 ? saved : 12;
+    } catch {
+      return 12;
+    }
+  });
+  function resizeText(next: number) {
+    const size = Math.max(10, Math.min(24, next));
+    setFontSize(size);
+    try {
+      localStorage.setItem("textbook-studio.chat-font-size", String(size));
+    } catch {
+      /* Storage can be disabled. */
+    }
+  }
   const [selection, setSelection] = useState("");
   const [question, setQuestion] = useState("");
   const [preferences, setPreferences] = useState({
@@ -507,24 +527,62 @@ function ReadingRoom({
         <aside
           id="learning-assistant"
           className="chat-panel"
+          style={{ "--chat-font-size": `${fontSize}px` } as CSSProperties}
           aria-label="AI 학습 도우미"
         >
           <div className="chat-header">
             <span className="ai-mark">
               <Sparkles size={18} />
             </span>
-            <div>
+            <div className="chat-heading">
               <strong>학습 도우미</strong>
-              <small>지금 읽는 문맥을 함께 이해해요</small>
             </div>
-            <button
-              className="icon-button"
-              aria-label="AI 설정"
-              aria-expanded={showSettings}
-              onClick={() => setShowSettings(!showSettings)}
-            >
-              <Settings2 size={18} />
-            </button>
+            <div className="chat-header-actions">
+              <div
+                className="chat-text-controls"
+                role="group"
+                aria-label="글자 크기"
+              >
+                <button
+                  className="icon-button"
+                  aria-label="도우미 글자 축소"
+                  title="글자 작게"
+                  disabled={fontSize <= 10}
+                  onClick={() => resizeText(fontSize - 1)}
+                >
+                  <Minus size={14} />
+                </button>
+                <output aria-label="도우미 글자 크기" aria-live="polite">
+                  {fontSize}px
+                </output>
+                <button
+                  className="icon-button"
+                  aria-label="도우미 글자 확대"
+                  title="글자 크게"
+                  disabled={fontSize >= 24}
+                  onClick={() => resizeText(fontSize + 1)}
+                >
+                  <Plus size={14} />
+                </button>
+                <button
+                  className="icon-button"
+                  aria-label="도우미 글자 크기 초기화"
+                  title="글자 크기 초기화"
+                  onClick={() => resizeText(12)}
+                >
+                  <RotateCcw size={13} />
+                </button>
+              </div>
+              <button
+                className="icon-button"
+                aria-label="AI 설정"
+                title="AI 설정"
+                aria-expanded={showSettings}
+                onClick={() => setShowSettings(!showSettings)}
+              >
+                <Settings2 size={18} />
+              </button>
+            </div>
           </div>
           {showSettings && (
             <section className="settings-panel">

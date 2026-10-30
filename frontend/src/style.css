@@ -581,7 +581,9 @@ button.primary:hover:not(:disabled) {
   position: relative;
   width: 18px;
   margin-inline: -5px;
-  cursor: url("./assets/resize-horizontal.svg") 12 12, ew-resize;
+  cursor:
+    url("./assets/resize-horizontal.svg") 12 12,
+    ew-resize;
   touch-action: none;
   user-select: none;
   background: linear-gradient(
@@ -716,7 +718,7 @@ button.primary:hover:not(:disabled) {
 }
 .chat-header {
   height: var(--reader-bar-height);
-  padding: 0 22px;
+  padding: 0 14px;
   display: flex;
   align-items: center;
   gap: 11px;
@@ -739,15 +741,24 @@ button.primary:hover:not(:disabled) {
   display: block;
   line-height: 1.35;
 }
-.chat-header small {
-  display: block;
-  color: #a0a692;
-  font-size: 10px;
-  margin-top: 2px;
-  line-height: 1.3;
+.chat-heading {
+  flex: 1;
+  min-width: 0;
 }
-.chat-header > .icon-button {
+.chat-heading strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-header .ai-mark {
+  flex: none;
+}
+.chat-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   margin-left: auto;
+  flex: none;
 }
 .settings-panel {
   padding: 18px 22px;
@@ -759,6 +770,31 @@ button.primary:hover:not(:disabled) {
   overflow-y: auto;
   flex-shrink: 0;
   max-height: 40%;
+}
+.chat-text-controls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: #647957;
+}
+.chat-text-controls .icon-button {
+  padding: 4px;
+}
+.chat-text-controls output {
+  min-width: 30px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.chat-panel .markdown,
+.chat-panel .composer textarea,
+.chat-panel .chat-welcome p {
+  font-size: var(--chat-font-size, 12px);
+}
+.chat-panel .markdown code,
+.chat-panel .message blockquote,
+.chat-panel .selection-chip {
+  font-size: calc(var(--chat-font-size, 12px) * 0.92);
 }
 .settings-panel > strong {
   font-size: 12px;

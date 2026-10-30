@@ -29,14 +29,21 @@ export function usePanelWidth() {
     return () => observer.disconnect();
   }, []);
 
-  function resize(next: number) {
-    const value = Math.round(Math.min(maximum, Math.max(300, next)));
+  function saveWidth(value: number) {
     setDesired(value);
     try {
       localStorage.setItem(KEY, String(value));
     } catch {
       /* Storage can be disabled. */
     }
+  }
+
+  function resize(next: number) {
+    saveWidth(Math.round(Math.min(maximum, Math.max(300, next))));
+  }
+
+  function reset() {
+    saveWidth(390);
   }
 
   function stop(event: PointerEvent<HTMLDivElement>) {
@@ -90,7 +97,7 @@ export function usePanelWidth() {
         );
       },
       onDoubleClick() {
-        resize(390);
+        reset();
       },
     },
   };

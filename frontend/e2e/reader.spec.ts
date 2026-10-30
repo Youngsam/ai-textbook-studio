@@ -216,26 +216,24 @@ test("reader side controls, model selection, panel resize, and rich explanations
     await expect(separator).toHaveCSS("cursor", /url\(.+\) 12 12, ew-resize/);
     expect(
       await separator.evaluate(async (element) => {
-        const url = getComputedStyle(element).cursor.match(/url\("([^"]+)"\)/)![1];
+        const url =
+          getComputedStyle(element).cursor.match(/url\("([^"]+)"\)/)![1];
         const image = new Image();
         image.src = url;
         await image.decode();
         return image.naturalWidth;
       }),
     ).toBe(24);
-    expect(await separator.evaluate((element) => element.matches(":hover"))).toBe(
-      true,
-    );
+    expect(
+      await separator.evaluate((element) => element.matches(":hover")),
+    ).toBe(true);
     expect(
       await page.evaluate(
         ({ x, y }) => document.elementFromPoint(x, y)?.className,
         { x: boundary.x + 1, y: handle.y + handle.height / 2 },
       ),
     ).toBe("panel-resizer");
-    await page.mouse.move(
-      boundary.x + 1,
-      handle.y + handle.height / 2,
-    );
+    await page.mouse.move(boundary.x + 1, handle.y + handle.height / 2);
     await page.mouse.down();
     await page.mouse.move(handle.x - 120, handle.y + handle.height / 2, {
       steps: 8,
@@ -258,6 +256,55 @@ test("reader side controls, model selection, panel resize, and rich explanations
     await expect(separator).toHaveAttribute(
       "aria-valuenow",
       String(resized - 20),
+    );
+
+    await expect(
+      page.getByRole("slider", { name: "학습 도우미 너비", exact: true }),
+    ).toHaveCount(0);
+    const adjustedWidth = resized - 20;
+    await page
+      .getByRole("button", { name: "도우미 글자 확대", exact: true })
+      .click();
+    await expect(
+      page.getByLabel("도우미 글자 크기", { exact: true }),
+    ).toHaveText("13px");
+    await expect(page.getByLabel("질문", { exact: true })).toHaveCSS(
+      "font-size",
+      "13px",
+    );
+    await page.reload();
+    await expect(separator).toHaveAttribute(
+      "aria-valuenow",
+      String(adjustedWidth),
+    );
+    await expect(page.getByLabel("질문", { exact: true })).toHaveCSS(
+      "font-size",
+      "13px",
+    );
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(
+      page
+        .locator(".chat-header")
+        .getByRole("button", { name: "도우미 글자 확대", exact: true }),
+    ).toBeVisible();
+    await page
+      .getByRole("button", { name: "도우미 글자 확대", exact: true })
+      .click();
+    await expect(page.getByLabel("질문", { exact: true })).toHaveCSS(
+      "font-size",
+      "14px",
+    );
+    await page
+      .getByRole("button", { name: "도우미 글자 크기 초기화", exact: true })
+      .click();
+    await expect(page.getByLabel("질문", { exact: true })).toHaveCSS(
+      "font-size",
+      "12px",
+    );
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await expect(separator).toHaveAttribute(
+      "aria-valuenow",
+      String(adjustedWidth),
     );
 
     const answer = String.raw`조건부 확률은 \(p(y_2 \mid y_1)\) 입니다.
