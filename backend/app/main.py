@@ -4,9 +4,12 @@ import hashlib
 import json
 import logging
 import shutil
+import sqlite3
 import time
 from contextlib import aclosing, asynccontextmanager, suppress
+from datetime import datetime, timezone
 from pathlib import Path
+from threading import Lock
 from uuid import UUID, uuid4
 
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
@@ -17,12 +20,20 @@ from sqlalchemy import select, text, update
 from sqlalchemy.exc import IntegrityError
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
+from app.backup import (
+    INTERVAL_SECONDS,
+    RETAIN_COUNT,
+    create_backup,
+    current_fingerprint,
+    destination,
+    prune_backups,
+)
 from app.config import ROOT, Settings
 from app.db import make_engine, migrate, sessions
 from app.llm import INSTRUCTIONS, ChatContext, make_adapter
 from app.models import AppSettings, Book, ChatRequest, Message, ReadingState, Thread, now
 from app.pdf import PdfService
-from app.schemas import ModelSelection, Preferences, Question, ReaderState
+from app.schemas import BackupPreferences, ModelSelection, Preferences, Question, ReaderState
 
 logger = logging.getLogger("studio")
 ACTIVE = ("pending", "streaming")
@@ -78,6 +89,7 @@ def create_app(settings: Settings | None = None, adapter=None):
     engine = make_engine(settings)
     Session = sessions(engine)
     pdf = PdfService(settings.pdf_process_timeout_seconds)
+    backup_lock = Lock()
 
     def folder(book_id):
         return settings.data_dir / "books" / str(UUID(str(book_id)))
@@ -124,8 +136,12 @@ def create_app(settings: Settings | None = None, adapter=None):
                 .where(Message.status.in_(ACTIVE))
                 .values(status="interrupted", error_code="server_restarted")
             )
-            if session.get(AppSettings, 1) is None:
-                session.add(AppSettings(id=1))
+            prefs = session.get(AppSettings, 1)
+            if prefs is None:
+                prefs = AppSettings(id=1)
+                session.add(prefs)
+            if not (prefs.backup_state or {}).get("source_id"):
+                prefs.backup_state = {**(prefs.backup_state or {}), "source_id": str(uuid4())}
             known = set(session.scalars(select(Book.id)))
         for item in temporary.glob("*.upload"):
             item.unlink(missing_ok=True)
@@ -137,8 +153,31 @@ def create_app(settings: Settings | None = None, adapter=None):
                     shutil.rmtree(item)
         app.state.Session = Session
         app.state.settings = settings
-        yield
-        engine.dispose()
+        app.state.run_backup = run_backup
+        stop_backups = asyncio.Event()
+
+        async def automatic_backups():
+            while not stop_backups.is_set():
+                try:
+                    await asyncio.wait_for(stop_backups.wait(), timeout=min(60, INTERVAL_SECONDS))
+                except TimeoutError:
+                    pass
+                if stop_backups.is_set():
+                    break
+                try:
+                    await asyncio.to_thread(run_backup, automatic=True)
+                except Exception:
+                    # Status is persisted by run_backup; keep the worker alive for retries.
+                    logger.warning("Automatic backup did not complete; will retry next interval")
+
+        task = asyncio.create_task(automatic_backups())
+        try:
+            yield
+        finally:
+            # Await any in-flight snapshot instead of abandoning its worker thread.
+            stop_backups.set()
+            await task
+            engine.dispose()
 
     app = FastAPI(title="AI Textbook Studio", lifespan=lifespan)
     app.add_middleware(RequestGuard, settings=settings)
@@ -167,6 +206,115 @@ def create_app(settings: Settings | None = None, adapter=None):
                 "image_mode": prefs.image_mode,
                 "max_upload_bytes": settings.max_upload_bytes,
             }
+
+    @app.get("/api/settings/backup")
+    def read_backup_settings():
+        with Session() as session:
+            prefs = session.get(AppSettings, 1)
+            state = prefs.backup_state
+            return {
+                "path": prefs.backup_path,
+                "auto_enabled": prefs.backup_auto,
+                "interval_minutes": INTERVAL_SECONDS // 60,
+                "retain_count": RETAIN_COUNT,
+                "last_success_at": state.get("last_success_at"),
+                "last_path": state.get("last_path"),
+                "error": state.get("error"),
+                "last_checked_at": state.get("last_checked_at"),
+            }
+
+    @app.put("/api/settings/backup")
+    def save_backup_settings(body: BackupPreferences):
+        try:
+            target = destination(body.path, settings)
+        except (ValueError, OSError, RuntimeError) as error:
+            fail(422, "invalid_backup_path", str(error))
+        # Serialize configuration changes with snapshots and retention in the old directory.
+        with backup_lock, Session.begin() as session:
+            prefs = session.get(AppSettings, 1)
+            if prefs.backup_path != str(target) or prefs.backup_auto != body.auto_enabled:
+                prefs.backup_state = {
+                    **prefs.backup_state,
+                    "fingerprint": None,
+                    "last_checked_at": None,
+                    "error": None,
+                }
+            prefs.backup_path = str(target)
+            prefs.backup_auto = body.auto_enabled
+        return read_backup_settings()
+
+    def run_backup(automatic=False, checked_at=None):
+        if not backup_lock.acquire(blocking=False):
+            if automatic:
+                return None
+            fail(
+                409, "backup_busy", "백업 또는 책 삭제가 진행 중입니다. 잠시 후 다시 시도해 주세요."
+            )
+
+        def record(**changes):
+            with Session.begin() as session:
+                prefs = session.get(AppSettings, 1)
+                prefs.backup_state = {**prefs.backup_state, **changes}
+
+        try:
+            with Session() as session:
+                prefs = session.get(AppSettings, 1)
+                value, enabled, state = prefs.backup_path, prefs.backup_auto, prefs.backup_state
+            checked_at = checked_at or datetime.now(timezone.utc)
+            if automatic:
+                if not enabled or not value:
+                    return None
+                previous = state.get("last_checked_at")
+                if (
+                    previous
+                    and (checked_at - datetime.fromisoformat(previous)).total_seconds()
+                    < INTERVAL_SECONDS
+                ):
+                    return None
+            record(last_checked_at=checked_at.isoformat())
+            target = destination(value, settings)
+            if (
+                automatic
+                and not state.get("error")
+                and state.get("fingerprint") == current_fingerprint(engine)
+                and state.get("last_path")
+                and Path(state["last_path"]).parent == target
+                and (Path(state["last_path"]) / "learning.db").is_file()
+            ):
+                return None
+            result = create_backup(engine, settings, target)
+            # Advance only to the fingerprint actually captured in the snapshot. Changes
+            # made while copying PDFs must remain dirty for the next scheduled backup.
+            record(
+                last_success_at=now(),
+                last_path=result["path"],
+                fingerprint=result["fingerprint"],
+                error=None,
+            )
+            try:
+                prune_backups(target, state["source_id"])
+            except OSError:
+                record(
+                    error="백업은 완료했지만 오래된 백업 정리에 실패했습니다. 경로 권한을 확인해 주세요."
+                )
+            return {key: result[key] for key in ("path", "book_count", "created_at")}
+        except (ValueError, RuntimeError) as error:
+            record(error=str(error))
+            fail(422, "backup_invalid", str(error))
+        except sqlite3.Error:
+            message = "데이터베이스 백업에 실패했습니다. 다음 자동 백업 주기에 재시도합니다."
+            record(error=message)
+            fail(503, "backup_database_failed", message)
+        except OSError:
+            message = "백업에 실패했습니다. 경로의 접근 권한·연결·여유 공간과 원본 PDF를 확인해 주세요. 다음 자동 백업 주기에 재시도합니다."
+            record(error=message)
+            fail(503, "backup_failed", message)
+        finally:
+            backup_lock.release()
+
+    @app.post("/api/backups", status_code=201)
+    def backup():
+        return run_backup()
 
     @app.put("/api/settings")
     def save_settings(body: Preferences):
@@ -331,24 +479,25 @@ def create_app(settings: Settings | None = None, adapter=None):
 
     @app.delete("/api/books/{book_id}", status_code=204)
     def delete_book(book_id: UUID):
-        # A write transaction serializes deletion with new chat acceptance.
-        with Session.begin() as session:
-            session.execute(text("BEGIN IMMEDIATE"))
-            book = get_book(session, book_id, deleting=True)
-            if session.scalar(
-                select(ChatRequest.id).where(
-                    ChatRequest.book_id == book.id, ChatRequest.status.in_(ACTIVE)
-                )
-            ):
-                fail(409, "chat_active", "답변이 끝난 뒤 삭제해 주세요.")
-            book.status = "deleting"
-        try:
-            if folder(book_id).exists():
-                shutil.rmtree(folder(book_id))
-        except OSError:
-            fail(503, "delete_failed", "파일 삭제에 실패했습니다. 다시 시도해 주세요.")
-        with Session.begin() as session:
-            session.delete(get_book(session, book_id, deleting=True))
+        with backup_lock:
+            # A write transaction serializes deletion with new chat acceptance.
+            with Session.begin() as session:
+                session.execute(text("BEGIN IMMEDIATE"))
+                book = get_book(session, book_id, deleting=True)
+                if session.scalar(
+                    select(ChatRequest.id).where(
+                        ChatRequest.book_id == book.id, ChatRequest.status.in_(ACTIVE)
+                    )
+                ):
+                    fail(409, "chat_active", "답변이 끝난 뒤 삭제해 주세요.")
+                book.status = "deleting"
+            try:
+                if folder(book_id).exists():
+                    shutil.rmtree(folder(book_id))
+            except OSError:
+                fail(503, "delete_failed", "파일 삭제에 실패했습니다. 다시 시도해 주세요.")
+            with Session.begin() as session:
+                session.delete(get_book(session, book_id, deleting=True))
 
     @app.get("/api/books/{book_id}/state")
     def read_state(book_id: UUID):

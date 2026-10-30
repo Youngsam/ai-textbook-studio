@@ -4,6 +4,7 @@ from uuid import uuid4
 
 import pymupdf
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 
@@ -555,3 +556,254 @@ def test_probe_provider_errors_are_safe(settings, monkeypatch):
         assert response.status_code == 422
         assert response.json()["detail"]["code"] == "provider_authentication"
         assert "secret-provider-error" not in response.text
+
+
+def test_portable_backup_restores_on_another_installation(settings, tmp_path):
+    import sqlite3
+    from contextlib import closing
+    from pathlib import Path
+
+    # The SQLite database need not be inside DATA_DIR.
+    settings.database_url = f"sqlite:///{tmp_path}/separate-db/study.db"
+    target = tmp_path.parent / f"backup-{uuid4()}"
+    try:
+        with TestClient(create_app(settings)) as client:
+            original_pdf = make_pdf()
+            book = upload(client, pdf=original_pdf)
+            state = {"page": 2, "zoom": 1.6, "scroll_offset": 0.4}
+            client.put(f"/api/books/{book['id']}/state", json=state).raise_for_status()
+            response, _ = ask(client, book)
+            events(response)
+            history = client.get(f"/api/books/{book['id']}/messages").json()
+            client.put("/api/settings", json={"response_style": "concise"}).raise_for_status()
+            assert client.put("/api/settings/backup", json={"path": str(target)}).status_code == 200
+            response = client.post("/api/backups")
+            assert response.status_code == 201, response.text
+            snapshot = Path(response.json()["path"])
+            assert response.json()["book_count"] == 1
+            assert (snapshot / "복구 안내.txt").is_file()
+            assert not (snapshot / ".env").exists()
+            assert not (snapshot / "learning.db-wal").exists()
+            with closing(sqlite3.connect(snapshot / "learning.db")) as db:
+                assert db.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+            # Future changes must not alter the existing snapshot.
+            client.put(f"/api/books/{book['id']}/state", json={**state, "page": 3})
+            second = client.post("/api/backups")
+            assert second.status_code == 201
+            assert second.json()["path"] != str(snapshot)
+            assert client.delete(f"/api/books/{book['id']}").status_code == 204
+        restored_settings = Settings(
+            _env_file=None,
+            data_dir=snapshot,
+            database_url=f"sqlite:///{snapshot}/learning.db",
+            llm_provider="fake",
+        )
+        with TestClient(create_app(restored_settings)) as restored:
+            assert restored.get("/api/books").json()["items"][0]["id"] == book["id"]
+            actual = restored.get(f"/api/books/{book['id']}/state").json()
+            assert all(actual[key] == value for key, value in state.items())
+            assert restored.get(f"/api/books/{book['id']}/messages").json() == history
+            assert restored.get(f"/api/books/{book['id']}/pdf").content == original_pdf
+            assert restored.get("/api/settings").json()["response_style"] == "concise"
+    finally:
+        import shutil
+
+        shutil.rmtree(target, ignore_errors=True)
+
+
+def test_backup_paths_and_incomplete_backup_cleanup(client, settings, tmp_path, monkeypatch):
+    import app.backup as backup_module
+
+    assert client.post("/api/backups").status_code == 422
+    for path in ["", "relative/path", str(settings.data_dir), str(settings.data_dir / "books/new")]:
+        assert client.put("/api/settings/backup", json={"path": path}).status_code == 422
+    link = tmp_path.parent / f"link-{uuid4()}"
+    link.symlink_to(settings.data_dir, target_is_directory=True)
+    try:
+        assert client.put("/api/settings/backup", json={"path": str(link)}).status_code == 422
+    finally:
+        link.unlink()
+    target = tmp_path.parent / f"backup-{uuid4()}"
+    try:
+        book = upload(client)
+        client.put("/api/settings/backup", json={"path": str(target)}).raise_for_status()
+        source = settings.data_dir / "books" / book["id"] / "original.pdf"
+        source.write_bytes(b"corrupted")
+        assert client.post("/api/backups").status_code == 422
+        assert list(target.iterdir()) == []
+        source.write_bytes(make_pdf())
+
+        def denied(*args, **kwargs):
+            raise PermissionError("disk unavailable")
+
+        monkeypatch.setattr(backup_module.shutil, "copyfile", denied)
+        assert client.post("/api/backups").status_code == 503
+        assert list(target.iterdir()) == []
+    finally:
+        target.rmdir()
+
+
+def test_concurrent_backups_rejected_and_lock_released(client, tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    import app.main as main_module
+
+    target = tmp_path.parent / f"backup-{uuid4()}"
+    client.put("/api/settings/backup", json={"path": str(target)}).raise_for_status()
+    entered, release = Event(), Event()
+    original = main_module.create_backup
+
+    def paused(*args):
+        entered.set()
+        assert release.wait(5)
+        return original(*args)
+
+    monkeypatch.setattr(main_module, "create_backup", paused)
+    try:
+        with ThreadPoolExecutor() as executor:
+            first = executor.submit(client.post, "/api/backups")
+            try:
+                assert entered.wait(5)
+                assert client.post("/api/backups").status_code == 409
+            finally:
+                release.set()
+            assert first.result().status_code == 201
+        assert client.post("/api/backups").status_code == 201
+    finally:
+        import shutil
+
+        shutil.rmtree(target, ignore_errors=True)
+
+
+def test_automatic_backup_changes_failures_and_restart(client, settings, tmp_path, monkeypatch):
+    import shutil
+    from datetime import datetime, timedelta, timezone
+    from pathlib import Path
+
+    import app.main as main_module
+
+    target = tmp_path.parent / f"backup-{uuid4()}"
+    try:
+        book = upload(client)
+        client.put("/api/settings/backup", json={"path": str(target)}).raise_for_status()
+        run = client.app.state.run_backup
+        tick = datetime.now(timezone.utc)
+        first = run(automatic=True, checked_at=tick)
+        assert first and Path(first["path"]).is_dir()
+        # Duplicate state writes change timestamps but not the learning data.
+        state = client.get(f"/api/books/{book['id']}/state").json()
+        client.put(f"/api/books/{book['id']}/state", json=state).raise_for_status()
+        assert run(automatic=True, checked_at=tick + timedelta(minutes=30)) is None
+        assert len(list(target.iterdir())) == 1
+        client.put(f"/api/books/{book['id']}/state", json={**state, "page": 2})
+        assert run(automatic=True, checked_at=tick + timedelta(minutes=31)) is None
+        second = run(automatic=True, checked_at=tick + timedelta(minutes=60))
+        assert second
+        original = main_module.create_backup
+
+        def unavailable(*args):
+            raise OSError("disk disconnected")
+
+        monkeypatch.setattr(main_module, "create_backup", unavailable)
+        client.put("/api/settings", json={"image_mode": "never"}).raise_for_status()
+        with pytest.raises(HTTPException) as error:
+            run(automatic=True, checked_at=tick + timedelta(minutes=90))
+        assert error.value.status_code == 503
+        status = client.get("/api/settings/backup").json()
+        assert status["error"]
+        assert status["last_path"] == second["path"]
+        assert Path(first["path"]).is_dir() and Path(second["path"]).is_dir()
+        monkeypatch.setattr(main_module, "create_backup", original)
+        assert run(automatic=True, checked_at=tick + timedelta(minutes=91)) is None
+        assert run(automatic=True, checked_at=tick + timedelta(minutes=120))
+        assert client.get("/api/settings/backup").json()["error"] is None
+        # A new server retains its baseline and does not back up its own status writes.
+        with TestClient(create_app(settings)) as restarted:
+            assert (
+                restarted.app.state.run_backup(
+                    automatic=True, checked_at=tick + timedelta(minutes=150)
+                )
+                is None
+            )
+            assert restarted.get("/api/settings/backup").json()["last_success_at"]
+            restarted.put("/api/settings/backup", json={"path": str(target), "auto_enabled": False})
+            assert (
+                restarted.app.state.run_backup(
+                    automatic=True, checked_at=tick + timedelta(minutes=180)
+                )
+                is None
+            )
+    finally:
+        shutil.rmtree(target, ignore_errors=True)
+
+
+def test_backup_retention_and_changes_during_snapshot(client, tmp_path, monkeypatch):
+    import shutil
+    from datetime import datetime, timedelta, timezone
+    from pathlib import Path
+
+    import app.main as main_module
+
+    target = tmp_path.parent / f"backup-{uuid4()}"
+    try:
+        book = upload(client)
+        client.put("/api/settings/backup", json={"path": str(target), "auto_enabled": False})
+        # Other installations, unknown files, and legacy backups are never pruned.
+        target.mkdir()
+        unrelated = target / "textbook-studio-20200101T000000Z-00000000"
+        unrelated.mkdir()
+        (unrelated / "backup.json").write_text(
+            '{"format":"textbook-studio","version":1,"source_id":"other"}'
+        )
+        (target / "notes.txt").write_text("keep")
+        paths = []
+        for _ in range(12):
+            response = client.post("/api/backups")
+            assert response.status_code == 201, response.text
+            paths.append(Path(response.json()["path"]))
+        assert not paths[0].exists() and not paths[1].exists()
+        assert all(path.is_dir() for path in paths[2:])
+        assert unrelated.is_dir() and (target / "notes.txt").read_text() == "keep"
+        original = main_module.create_backup
+
+        def change_after_snapshot(*args):
+            result = original(*args)
+            with client.app.state.Session.begin() as session:
+                session.get(ReadingState, book["id"]).page = 2
+            return result
+
+        client.put("/api/settings/backup", json={"path": str(target)})
+        monkeypatch.setattr(main_module, "create_backup", change_after_snapshot)
+        tick = datetime.now(timezone.utc)
+        assert client.app.state.run_backup(automatic=True, checked_at=tick)
+        monkeypatch.setattr(main_module, "create_backup", original)
+        assert client.app.state.run_backup(automatic=True, checked_at=tick + timedelta(minutes=30))
+    finally:
+        shutil.rmtree(target, ignore_errors=True)
+
+
+def test_automatic_backup_worker_runs_without_browser(settings, tmp_path, monkeypatch):
+    import shutil
+    from threading import Event
+
+    import app.main as main_module
+
+    target = tmp_path.parent / f"backup-{uuid4()}"
+    completed = Event()
+    original = main_module.create_backup
+
+    def observe(*args):
+        result = original(*args)
+        completed.set()
+        return result
+
+    monkeypatch.setattr(main_module, "INTERVAL_SECONDS", 0.05)
+    monkeypatch.setattr(main_module, "create_backup", observe)
+    try:
+        with TestClient(create_app(settings)) as client:
+            client.put("/api/settings/backup", json={"path": str(target)}).raise_for_status()
+            assert completed.wait(5), "Server worker must back up without browser activity"
+        assert len(list(target.glob("textbook-studio-*"))) == 1
+    finally:
+        shutil.rmtree(target, ignore_errors=True)

@@ -14,6 +14,11 @@ class ReaderState(BaseModel):
 Provider = Literal["openai", "claude", "gemini", "openrouter", "fake"]
 
 
+class BackupPreferences(BaseModel):
+    path: str = Field(min_length=1, max_length=4096)
+    auto_enabled: bool = True
+
+
 class ModelSelection(BaseModel):
     provider: Provider
     model: str = Field(min_length=1, max_length=200, pattern=r"^\S+(?:[^\r\n]*\S)?$", strict=True)

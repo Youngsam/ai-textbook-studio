@@ -108,3 +108,6 @@ class AppSettings(Base):
     image_mode: Mapped[str] = mapped_column(default="auto")
     model: Mapped[str] = mapped_column(default="")
     provider: Mapped[str] = mapped_column(default="")
+    backup_path: Mapped[str] = mapped_column(default="")
+    backup_auto: Mapped[bool] = mapped_column(default=True)
+    backup_state: Mapped[dict] = mapped_column(JSON, default=dict)

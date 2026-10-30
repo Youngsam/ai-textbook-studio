@@ -771,6 +771,36 @@ button.primary:hover:not(:disabled) {
   flex-shrink: 0;
   max-height: 40%;
 }
+.backup-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+.settings-panel .backup-settings {
+  border-top: 1px solid var(--line);
+  padding-top: 16px;
+}
+.backup-settings p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.backup-settings input {
+  width: 100%;
+  min-width: 0;
+}
+.backup-settings details {
+  font-size: 12px;
+  line-height: 1.7;
+}
+.backup-settings summary {
+  cursor: pointer;
+}
+.backup-result {
+  padding: 12px;
+  background: #edf4e7;
+  border-radius: 8px;
+}
 .chat-text-controls {
   display: flex;
   align-items: center;
@@ -1351,4 +1381,15 @@ button.primary:hover:not(:disabled) {
     gap: 2px;
     padding: 4px;
   }
+}
+
+.backup-settings .backup-auto-toggle {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}
+.backup-settings .backup-auto-toggle input {
+  width: auto;
+  flex: none;
 }

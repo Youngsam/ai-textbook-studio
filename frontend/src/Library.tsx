@@ -1,8 +1,17 @@
 import { useState, type FormEvent } from "react";
 import { useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
-import { ArrowUpRight, BookOpen, Plus, Trash2, Upload, X } from "lucide-react";
+import {
+  ArrowUpRight,
+  BookOpen,
+  Plus,
+  Settings2,
+  Trash2,
+  Upload,
+  X,
+} from "lucide-react";
 import { api, type Book, type Page } from "./api";
+import { BackupSettings } from "./BackupSettings";
 
 export function Library() {
   const client = useQueryClient();
@@ -14,6 +23,7 @@ export function Library() {
     getNextPageParam: (page) => page.next_cursor ?? undefined,
   });
   const [adding, setAdding] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
   const [title, setTitle] = useState("");
   const [author, setAuthor] = useState("");
   const [file, setFile] = useState<File | null>(null);
@@ -73,6 +83,9 @@ export function Library() {
         <span className="local-badge">
           <i /> 개인 라이브러리
         </span>
+        <button onClick={() => setShowSettings(true)} aria-label="설정 · 백업">
+          <Settings2 size={18} /> 설정
+        </button>
       </header>
       <main className="library-main">
         <div className="library-heading">
@@ -182,6 +195,26 @@ export function Library() {
           </span>
         </footer>
       </main>
+      {showSettings && (
+        <div className="modal-backdrop">
+          <section
+            className="modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="backup-title"
+          >
+            <button
+              className="modal-close icon-button"
+              aria-label="닫기"
+              onClick={() => setShowSettings(false)}
+            >
+              <X />
+            </button>
+            <h2 id="backup-title">설정</h2>
+            <BackupSettings />
+          </section>
+        </div>
+      )}
       {adding && (
         <div className="modal-backdrop">
           <section

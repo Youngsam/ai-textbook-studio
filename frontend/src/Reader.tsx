@@ -8,6 +8,7 @@ import {
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams } from "react-router-dom";
 import { MarkdownContent } from "./MarkdownContent";
+import { BackupSettings } from "./BackupSettings";
 import {
   ArrowLeft,
   ArrowUp,
@@ -713,6 +714,7 @@ function ReadingRoom({
                   <option value="never">첨부하지 않음</option>
                 </select>
               </label>
+              <BackupSettings />
             </section>
           )}
           {!settings.llm_configured && (
