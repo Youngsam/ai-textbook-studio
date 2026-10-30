@@ -93,7 +93,7 @@ SQLite는 FK 활성화, WAL, busy timeout을 설정하고 서버 프로세스 1�
 
 1. 업로드는 `UploadFile`로 받고 제한된 청크로 임시 파일에 기록하면서 크기와 SHA-256을 계산한다. multipart 파서·임시 파일 단계에도 전체 요청 크기 상한을 적용해 API 핸들러 진입 전 디스크 사용을 제한한다. [FastAPI 공식 문서](https://fastapi.tiangolo.com/tutorial/request-files/)
 2. PDF 서명만으로 유효하다고 판단하지 않는다. 파서 열기, 페이지 수, 암호화 여부도 검사한다. 암호화·손상 PDF는 P0에서 명시적으로 거절한다.
-3. 초기 제한은 파일 100 MiB, 2,000페이지, PDF 처리 작업 30초, 동시 처리 1개다. 값은 설정 가능하게 하고 운영 대상 책으로 조정한다.
+3. 초기 제한은 파일 500 MiB, 2,000페이지, PDF 처리 작업 30초, 동시 처리 1개다. 값은 설정 가능하게 하고 운영 대상 책으로 조정한다.
 4. 검증 후 `data/books/<uuid>/original.pdf`로 이동하고 책·독서 상태·기본 스레드를 한 DB 트랜잭션으로 생성한다. 실패 시 파일을 정리한다. 크래시로 남은 임시 파일·미참조 디렉터리는 시작 시 점검한다.
 5. 동일 해시 파일은 새 프로젝트로 등록할 수 있다. 중복 알림은 선택적으로 표시하고 조용히 기존 책으로 합치지 않는다.
 6. 삭제 확인은 프론트에서 수행하고, 서버는 삭제 중 상태를 기록한 뒤 파일을 제거하고 DB를 cascade 삭제한다. 실패하면 삭제 중 상태로 재시도 가능하게 유지한다. 활성 채팅 중 삭제는 409로 거절한다.
@@ -194,7 +194,7 @@ auto는 정규화된 추출 텍스트가 50자 미만인 페이지에 이미지�
 |---|---|
 | DATA_DIR / DATABASE_URL | 저장소 루트 기준 절대 경로로 정규화; 현재 예제의 SQLite URL과 호환 |
 | LLM_PROVIDER / LLM_MODEL / OPENAI_API_KEY | openai / 모델 명시 / 서버 전용 키 |
-| MAX_UPLOAD_BYTES / MAX_PDF_PAGES | 104857600 / 2000 |
+| MAX_UPLOAD_BYTES / MAX_PDF_PAGES | 524288000 / 2000 |
 | PDF_PROCESS_TIMEOUT_SECONDS | 30 |
 | LLM_INPUT_TOKEN_BUDGET / LLM_MAX_OUTPUT_TOKENS | 12000 / 2000 |
 | LLM_TIMEOUT_SECONDS | 120 |

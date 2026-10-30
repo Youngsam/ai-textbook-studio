@@ -579,10 +579,17 @@ button.primary:hover:not(:disabled) {
 }
 .panel-resizer {
   position: relative;
-  cursor: col-resize;
+  width: 18px;
+  margin-inline: -5px;
+  cursor: url("./assets/resize-horizontal.svg") 12 12, ew-resize;
   touch-action: none;
   user-select: none;
-  background: #e9ece2;
+  background: linear-gradient(
+    to right,
+    transparent 5px,
+    #e9ece2 5px 13px,
+    transparent 13px
+  );
   z-index: 6;
 }
 .panel-resizer::after {
@@ -591,15 +598,21 @@ button.primary:hover:not(:disabled) {
   width: 2px;
   height: 36px;
   top: 50%;
-  left: 3px;
+  left: 8px;
   transform: translateY(-50%);
   border-radius: 2px;
   background: #a2b394;
+  pointer-events: none;
 }
 .panel-resizer:hover,
 .panel-resizer:focus-visible,
 .panel-resizer:active {
-  background: #d4dfc8;
+  background: linear-gradient(
+    to right,
+    transparent 5px,
+    #d4dfc8 5px 13px,
+    transparent 13px
+  );
 }
 .reader-toolbar {
   height: var(--reader-bar-height);

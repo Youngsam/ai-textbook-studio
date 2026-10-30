@@ -43,7 +43,7 @@ class Settings(BaseSettings):
     llm_timeout_seconds: float = 120
     llm_input_token_budget: int = 12000
     llm_max_output_tokens: int = 2000
-    max_upload_bytes: int = 100 * 1024 * 1024
+    max_upload_bytes: int = 500 * 1024 * 1024
     max_pdf_pages: int = 2000
     pdf_process_timeout_seconds: float = 30
     allowed_hosts: str = "localhost,127.0.0.1,[::1],testserver"

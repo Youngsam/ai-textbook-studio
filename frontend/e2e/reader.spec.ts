@@ -211,8 +211,29 @@ test("reader side controls, model selection, panel resize, and rich explanations
     const initialWidth = (await page.locator(".chat-panel").boundingBox())!
       .width;
     const handle = (await separator.boundingBox())!;
+    const boundary = (await page.locator(".chat-panel").boundingBox())!;
+    await page.mouse.move(boundary.x + 1, handle.y + handle.height / 2);
+    await expect(separator).toHaveCSS("cursor", /url\(.+\) 12 12, ew-resize/);
+    expect(
+      await separator.evaluate(async (element) => {
+        const url = getComputedStyle(element).cursor.match(/url\("([^"]+)"\)/)![1];
+        const image = new Image();
+        image.src = url;
+        await image.decode();
+        return image.naturalWidth;
+      }),
+    ).toBe(24);
+    expect(await separator.evaluate((element) => element.matches(":hover"))).toBe(
+      true,
+    );
+    expect(
+      await page.evaluate(
+        ({ x, y }) => document.elementFromPoint(x, y)?.className,
+        { x: boundary.x + 1, y: handle.y + handle.height / 2 },
+      ),
+    ).toBe("panel-resizer");
     await page.mouse.move(
-      handle.x + handle.width / 2,
+      boundary.x + 1,
       handle.y + handle.height / 2,
     );
     await page.mouse.down();

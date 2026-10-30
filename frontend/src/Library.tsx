@@ -205,7 +205,7 @@ export function Library() {
               <label className="file-picker">
                 <Upload />
                 <strong>{file?.name ?? "PDF 파일 선택"}</strong>
-                <small>최대 100 MiB · 암호화되지 않은 PDF</small>
+                <small>최대 500 MiB · 암호화되지 않은 PDF</small>
                 <input
                   aria-label="PDF 파일"
                   type="file"
