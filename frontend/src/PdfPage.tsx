@@ -1,6 +1,12 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
 import { TextLayer, type PDFDocumentProxy, type RenderTask } from "pdfjs-dist";
 import type { PageViewport } from "pdfjs-dist/types/src/display/display_utils";
+import {
+  annotationColors,
+  selectionRects,
+  type Annotation,
+  type TextSelection,
+} from "./annotations";
 import type { ReadingState } from "./api";
 import {
   referencePoint,
@@ -27,6 +33,10 @@ export function PdfPage({
   handle,
   onScroll,
   onSelection,
+  annotations = [],
+  onAnnotationSelection,
+  onAnnotationClick,
+  annotationFocus,
   onLink,
   onUnsupported,
   onReady,
@@ -38,6 +48,13 @@ export function PdfPage({
   handle?: RefObject<PageHandle | null>;
   onScroll?: (offset: number) => void;
   onSelection?: (text: string) => void;
+  annotations?: Annotation[];
+  onAnnotationSelection?: (
+    selection: TextSelection | null,
+    bounds?: DOMRect,
+  ) => void;
+  onAnnotationClick?: (annotation: Annotation) => void;
+  annotationFocus?: { id: string; token: number };
   onLink?: (dest: unknown, source: HTMLElement, label: string) => void;
   onUnsupported?: () => void;
   onReady?: (page: number, zoom: number) => void;
@@ -46,6 +63,8 @@ export function PdfPage({
   const [error, setError] = useState("");
   const [linkError, setLinkError] = useState("");
   const [rendering, setRendering] = useState(true);
+  const [renderVersion, setRenderVersion] = useState(0);
+  const focusedAnnotation = useRef<number | null>(null);
   const [links, setLinks] = useState<Link[]>([]);
   const host = useRef<HTMLDivElement>(null);
   const paper = useRef<HTMLDivElement>(null);
@@ -210,6 +229,7 @@ export function PdfPage({
             Math.max(0, h.scrollHeight - h.clientHeight);
         }
         ready.current = true;
+        setRenderVersion((version) => version + 1);
         oldPoint.current = capture();
         if (request && applied.current === request.id)
           latest.current.onScroll?.(
@@ -238,6 +258,28 @@ export function PdfPage({
     };
   }, [document, state.page, state.zoom, request?.id]);
 
+  useEffect(() => {
+    if (
+      !annotationFocus ||
+      !ready.current ||
+      !host.current ||
+      focusedAnnotation.current === annotationFocus.token
+    )
+      return;
+    const element = host.current.querySelector<HTMLElement>(
+      `[data-annotation-id="${annotationFocus.id}"]`,
+    );
+    if (element) {
+      focusedAnnotation.current = annotationFocus.token;
+      element.scrollIntoView({
+        block: "center",
+        inline: "nearest",
+        behavior: "instant",
+      });
+      element.focus({ preventScroll: true });
+    }
+  }, [annotationFocus, renderVersion]);
+
   function captureSelection() {
     const selection = window.getSelection();
     if (
@@ -246,7 +288,19 @@ export function PdfPage({
       !layer.current.contains(selection.focusNode)
     )
       return;
-    latest.current.onSelection?.(selection.toString().trim());
+    const text = selection.toString().trim();
+    latest.current.onSelection?.(text);
+    if (!text || !selection.rangeCount || !paper.current) {
+      onAnnotationSelection?.(null);
+      return;
+    }
+    const range = selection.getRangeAt(0);
+    const rects = selectionRects(range, paper.current.getBoundingClientRect());
+    if (rects.length)
+      onAnnotationSelection?.(
+        { page: state.page, selected_text: text, rects },
+        range.getBoundingClientRect(),
+      );
   }
   function linkLabel(link: HTMLElement) {
     const r = link.getBoundingClientRect();
@@ -283,6 +337,31 @@ export function PdfPage({
           );
         }
       }}
+      onClick={(event) => {
+        if (
+          (event.target as HTMLElement).closest("a, button") ||
+          !window.getSelection()?.isCollapsed ||
+          !paper.current
+        )
+          return;
+        const bounds = paper.current.getBoundingClientRect();
+        const x = (event.clientX - bounds.left) / bounds.width;
+        const y = (event.clientY - bounds.top) / bounds.height;
+        const match = [...annotations]
+          .reverse()
+          .find(
+            (item) =>
+              item.page === state.page &&
+              item.rects.some(
+                (rect) =>
+                  x >= rect.x &&
+                  x <= rect.x + rect.width &&
+                  y >= rect.y &&
+                  y <= rect.y + rect.height,
+              ),
+          );
+        if (match) onAnnotationClick?.(match);
+      }}
       onMouseUp={captureSelection}
       onKeyUp={captureSelection}
       onTouchEnd={captureSelection}
@@ -309,6 +388,31 @@ export function PdfPage({
       >
         <canvas ref={canvas} />
         <div ref={layer} className="textLayer" />
+        <div className="pdf-highlight-layer">
+          {annotations
+            .filter((item) => item.page === state.page)
+            .map((item) =>
+              item.rects.map((rect, index) => (
+                <button
+                  key={`${item.id}-${index}`}
+                  type="button"
+                  className={`pdf-highlight ${annotationFocus?.id === item.id ? "is-active" : ""}`}
+                  data-annotation-id={item.id}
+                  tabIndex={index === 0 ? 0 : -1}
+                  aria-label={`${item.note ? "주석" : "하이라이트"}: ${item.selected_text}`}
+                  title={item.note || item.selected_text}
+                  style={{
+                    left: `${rect.x * 100}%`,
+                    top: `${rect.y * 100}%`,
+                    width: `${rect.width * 100}%`,
+                    height: `${rect.height * 100}%`,
+                    backgroundColor: annotationColors[item.color].fill,
+                  }}
+                  onClick={() => onAnnotationClick?.(item)}
+                />
+              )),
+            )}
+        </div>
         {onLink && (
           <div className="pdf-link-layer">
             {links.map((link, index) => (

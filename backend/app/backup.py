@@ -26,6 +26,7 @@ def fingerprint(connection):
         "chat_threads",
         "chat_requests",
         "messages",
+        "annotations",
         "app_settings",
     ):
         info = connection.execute(f'PRAGMA table_info("{table}")').fetchall()

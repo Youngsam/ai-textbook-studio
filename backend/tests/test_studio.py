@@ -575,6 +575,18 @@ def test_portable_backup_restores_on_another_installation(settings, tmp_path):
             response, _ = ask(client, book)
             events(response)
             history = client.get(f"/api/books/{book['id']}/messages").json()
+            annotations = client.post(
+                f"/api/books/{book['id']}/annotations",
+                json={
+                    "page": 2,
+                    "selected_text": "A vector",
+                    "color": "blue",
+                    "note": "Backed up note",
+                    "rects": [{"x": 0.1, "y": 0.2, "width": 0.3, "height": 0.02}],
+                },
+            )
+            assert annotations.status_code == 201
+            saved_annotations = client.get(f"/api/books/{book['id']}/annotations").json()
             client.put("/api/settings", json={"response_style": "concise"}).raise_for_status()
             assert client.put("/api/settings/backup", json={"path": str(target)}).status_code == 200
             response = client.post("/api/backups")
@@ -603,6 +615,7 @@ def test_portable_backup_restores_on_another_installation(settings, tmp_path):
             actual = restored.get(f"/api/books/{book['id']}/state").json()
             assert all(actual[key] == value for key, value in state.items())
             assert restored.get(f"/api/books/{book['id']}/messages").json() == history
+            assert restored.get(f"/api/books/{book['id']}/annotations").json() == saved_annotations
             assert restored.get(f"/api/books/{book['id']}/pdf").content == original_pdf
             assert restored.get("/api/settings").json()["response_style"] == "concise"
     finally:
@@ -829,3 +842,58 @@ def test_extracted_outline_endpoint_cache_and_recovery(client, settings):
     assert client.get(url).json() == result.json()
     cache.write_text("interrupted cache")
     assert client.get(url).json() == result.json()
+
+
+def test_annotations_persist_scope_validate_and_cascade(settings):
+    from app.backup import current_fingerprint
+    from app.models import Annotation
+
+    with TestClient(create_app(settings)) as client:
+        book, other = upload(client), upload(client, title="Other")
+        url = f"/api/books/{book['id']}/annotations"
+        body = {
+            "page": 2,
+            "selected_text": "magnitude and direction",
+            "color": "green",
+            "note": "Remember this vector",
+            "rects": [
+                {"x": 0.1, "y": 0.2, "width": 0.4, "height": 0.02},
+                {"x": 0.1, "y": 0.23, "width": 0.2, "height": 0.02},
+            ],
+        }
+        engine = client.app.state.Session.kw["bind"]
+        before = current_fingerprint(engine)
+        response = client.post(url, json=body)
+        assert response.status_code == 201, response.text
+        annotation = response.json()
+        assert current_fingerprint(engine) != before
+        assert annotation["rects"] == body["rects"]
+        assert client.get(url).json()["items"] == [annotation]
+        wrong = f"/api/books/{other['id']}/annotations/{annotation['id']}"
+        assert client.put(wrong, json={"color": "blue", "note": "wrong"}).status_code == 404
+        assert client.delete(wrong).status_code == 404
+        for invalid in (
+            {"page": 4},
+            {"page": 0},
+            {"color": "red"},
+            {"selected_text": "  "},
+            {"rects": []},
+            {"rects": [{"x": 0.9, "y": 0, "width": 0.2, "height": 0.1}]},
+            {"note": "x" * 10001},
+        ):
+            assert client.post(url, json={**body, **invalid}).status_code == 422
+    with TestClient(create_app(settings)) as client:
+        restored = client.get(url).json()["items"][0]
+        assert restored == annotation
+        endpoint = f"{url}/{annotation['id']}"
+        result = client.put(endpoint, json={"note": "", "color": "pink"})
+        assert result.status_code == 200
+        assert result.json()["note"] == ""
+        assert result.json()["color"] == "pink"
+        assert client.delete(endpoint).status_code == 204
+        assert client.get(url).json()["items"] == []
+        assert client.delete(endpoint).status_code == 404
+        client.post(url, json=body)
+        assert client.delete(f"/api/books/{book['id']}").status_code == 204
+        with client.app.state.Session() as session:
+            assert session.scalar(select(func.count()).select_from(Annotation)) == 0

@@ -50,3 +50,36 @@ class Question(Preferences):
         if not value.strip():
             raise ValueError("질문을 입력해 주세요.")
         return value.strip()
+
+
+class AnnotationRect(BaseModel):
+    x: float = Field(ge=0, le=1, allow_inf_nan=False)
+    y: float = Field(ge=0, le=1, allow_inf_nan=False)
+    width: float = Field(gt=0, le=1, allow_inf_nan=False)
+    height: float = Field(gt=0, le=1, allow_inf_nan=False)
+
+    @field_validator("width", "height")
+    @classmethod
+    def inside_page(cls, value, info):
+        origin = info.data.get("x" if info.field_name == "width" else "y", 0)
+        if origin + value > 1.000001:
+            raise ValueError("선택 영역이 페이지 범위를 벗어났습니다.")
+        return value
+
+
+class AnnotationUpdate(BaseModel):
+    color: Literal["yellow", "green", "blue", "pink"] = "yellow"
+    note: str = Field(default="", max_length=10000)
+
+
+class AnnotationCreate(AnnotationUpdate):
+    page: int = Field(ge=1)
+    selected_text: str = Field(min_length=1, max_length=12000)
+    rects: list[AnnotationRect] = Field(min_length=1, max_length=500)
+
+    @field_validator("selected_text")
+    @classmethod
+    def clean_selection(cls, value):
+        if not value.strip():
+            raise ValueError("선택한 텍스트가 없습니다.")
+        return value.strip()

@@ -111,3 +111,21 @@ class AppSettings(Base):
     backup_path: Mapped[str] = mapped_column(default="")
     backup_auto: Mapped[bool] = mapped_column(default=True)
     backup_state: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class Annotation(Base):
+    __tablename__ = "annotations"
+    __table_args__ = (
+        CheckConstraint("page >= 1"),
+        CheckConstraint("color IN ('yellow', 'green', 'blue', 'pink')"),
+        Index("annotation_book_page", "book_id", "page"),
+    )
+    id: Mapped[str] = mapped_column(primary_key=True, default=uid)
+    book_id: Mapped[str] = mapped_column(ForeignKey("books.id", ondelete="CASCADE"))
+    page: Mapped[int]
+    selected_text: Mapped[str]
+    rects: Mapped[list] = mapped_column(JSON)
+    color: Mapped[str] = mapped_column(default="yellow")
+    note: Mapped[str] = mapped_column(default="")
+    created_at: Mapped[str] = mapped_column(default=now)
+    updated_at: Mapped[str] = mapped_column(default=now)

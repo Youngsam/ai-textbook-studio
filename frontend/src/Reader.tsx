@@ -13,6 +13,7 @@ import {
   ArrowLeft,
   ArrowUp,
   BookOpen,
+  Highlighter,
   ChevronLeft,
   ChevronRight,
   List,
@@ -127,6 +128,7 @@ function ReadingRoom({
       /* Storage can be disabled. */
     }
   }
+  const [showAnnotations, setShowAnnotations] = useState(false);
   const [selection, setSelection] = useState("");
   const [question, setQuestion] = useState("");
   const [preferences, setPreferences] = useState({
@@ -559,6 +561,15 @@ function ReadingRoom({
                 })}
               </nav>
             </details>
+            <button
+              className="annotations-toggle"
+              aria-pressed={showAnnotations}
+              aria-controls="reader-annotations"
+              onClick={() => setShowAnnotations(!showAnnotations)}
+            >
+              <Highlighter size={16} />
+              <span>내 기록</span>
+            </button>
             <div className="zoom-controls">
               <button
                 className="icon-button"
@@ -586,6 +597,8 @@ function ReadingRoom({
           <div className="pdf-stage">
             <PdfView
               id={book.id}
+              showAnnotations={showAnnotations}
+              onShowAnnotations={setShowAnnotations}
               state={state}
               onScroll={(offset) => change({ ...state, scroll_offset: offset })}
               onSelection={setSelection}

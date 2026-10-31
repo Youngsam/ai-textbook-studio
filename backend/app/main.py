@@ -31,9 +31,26 @@ from app.backup import (
 from app.config import ROOT, Settings
 from app.db import make_engine, migrate, sessions
 from app.llm import INSTRUCTIONS, ChatContext, make_adapter
-from app.models import AppSettings, Book, ChatRequest, Message, ReadingState, Thread, now
+from app.models import (
+    Annotation,
+    AppSettings,
+    Book,
+    ChatRequest,
+    Message,
+    ReadingState,
+    Thread,
+    now,
+)
 from app.pdf import PdfService
-from app.schemas import BackupPreferences, ModelSelection, Preferences, Question, ReaderState
+from app.schemas import (
+    AnnotationCreate,
+    AnnotationUpdate,
+    BackupPreferences,
+    ModelSelection,
+    Preferences,
+    Question,
+    ReaderState,
+)
 
 logger = logging.getLogger("studio")
 ACTIVE = ("pending", "streaming")
@@ -528,6 +545,58 @@ def create_app(settings: Settings | None = None, adapter=None):
                 setattr(state, key, value)
             state.updated_at = now()
         return {**body.model_dump(), "updated_at": state.updated_at}
+
+    def annotation_record(annotation):
+        return {
+            column.name: getattr(annotation, column.name) for column in Annotation.__table__.columns
+        }
+
+    @app.get("/api/books/{book_id}/annotations")
+    def list_annotations(book_id: UUID):
+        with Session() as session:
+            get_book(session, book_id)
+            return {
+                "items": [
+                    annotation_record(item)
+                    for item in session.scalars(
+                        select(Annotation)
+                        .where(Annotation.book_id == str(book_id))
+                        .order_by(Annotation.page, Annotation.created_at, Annotation.id)
+                    )
+                ]
+            }
+
+    @app.post("/api/books/{book_id}/annotations", status_code=201)
+    def create_annotation(book_id: UUID, body: AnnotationCreate):
+        with Session.begin() as session:
+            book = get_book(session, book_id)
+            if body.page > book.page_count:
+                fail(422, "page_out_of_range", "책의 페이지 범위를 벗어났습니다.")
+            annotation = Annotation(book_id=book.id, **body.model_dump())
+            session.add(annotation)
+            session.flush()
+            return annotation_record(annotation)
+
+    def get_annotation(session, book_id, annotation_id):
+        get_book(session, book_id)
+        annotation = session.get(Annotation, str(annotation_id))
+        if annotation is None or annotation.book_id != str(book_id):
+            fail(404, "annotation_not_found", "기록을 찾을 수 없습니다.")
+        return annotation
+
+    @app.put("/api/books/{book_id}/annotations/{annotation_id}")
+    def update_annotation(book_id: UUID, annotation_id: UUID, body: AnnotationUpdate):
+        with Session.begin() as session:
+            annotation = get_annotation(session, book_id, annotation_id)
+            annotation.color, annotation.note = body.color, body.note
+            annotation.updated_at = now()
+            session.flush()
+            return annotation_record(annotation)
+
+    @app.delete("/api/books/{book_id}/annotations/{annotation_id}", status_code=204)
+    def delete_annotation(book_id: UUID, annotation_id: UUID):
+        with Session.begin() as session:
+            session.delete(get_annotation(session, book_id, annotation_id))
 
     @app.get("/api/books/{book_id}/messages")
     def history(book_id: UUID, limit: int = Query(50, ge=1, le=100), before: str | None = None):

@@ -6,8 +6,19 @@ import {
 } from "pdfjs-dist";
 import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import "pdfjs-dist/web/pdf_viewer.css";
-import { ArrowLeft, Minus, Plus, X } from "lucide-react";
-import type { ReadingState } from "./api";
+import { ArrowLeft, MessageSquare, Minus, Plus, X } from "lucide-react";
+import { api, type ReadingState } from "./api";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  AnnotationsPanel,
+  ColorPicker,
+  type AnnotationDraft,
+} from "./AnnotationsPanel";
+import {
+  type Annotation,
+  type AnnotationColor,
+  type TextSelection,
+} from "./annotations";
 import {
   resolveReference,
   type PdfLocation,
@@ -32,8 +43,12 @@ export function PdfView({
   onScroll,
   onSelection,
   onNavigate,
+  showAnnotations,
+  onShowAnnotations,
 }: {
   id: string;
+  showAnnotations: boolean;
+  onShowAnnotations: (value: boolean) => void;
   state: ReadingState;
   onScroll: (offset: number) => void;
   onSelection: (value: string) => void;
@@ -65,6 +80,143 @@ export function PdfView({
     x: number;
     y: number;
   } | null>(null);
+
+  const client = useQueryClient();
+  const records = useQuery({
+    queryKey: ["annotations", id],
+    queryFn: () => api<{ items: Annotation[] }>(`/books/${id}/annotations`),
+  });
+  const items = records.data?.items ?? [];
+  const [selected, setSelected] = useState<TextSelection | null>(null);
+  const [selectionPosition, setSelectionPosition] = useState({ x: 12, y: 12 });
+  const [color, setColor] = useState<AnnotationColor>("yellow");
+  const [annotationDraft, setAnnotationDraft] =
+    useState<AnnotationDraft | null>(null);
+  const [annotationBusy, setAnnotationBusy] = useState(false);
+  const annotationLock = useRef(false);
+  const [annotationError, setAnnotationError] = useState("");
+  const [annotationNotice, setAnnotationNotice] = useState("");
+  const [annotationFocus, setAnnotationFocus] = useState<{
+    id: string;
+    token: number;
+  }>();
+  useEffect(() => {
+    setSelected(null);
+  }, [state.page, state.zoom]);
+  useEffect(() => {
+    if (!selected) return;
+    const clear = () => setSelected(null);
+    const escape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") clear();
+    };
+    const outside = (event: PointerEvent) => {
+      if (!(event.target as HTMLElement).closest(".annotation-selection-tools"))
+        clear();
+    };
+    window.addEventListener("keydown", escape);
+    window.addEventListener("pointerdown", outside);
+    window.addEventListener("scroll", clear, true);
+    window.addEventListener("resize", clear);
+    return () => {
+      window.removeEventListener("keydown", escape);
+      window.removeEventListener("pointerdown", outside);
+      window.removeEventListener("scroll", clear, true);
+      window.removeEventListener("resize", clear);
+    };
+  }, [selected]);
+  useEffect(() => {
+    if (!annotationNotice) return;
+    const timer = window.setTimeout(() => setAnnotationNotice(""), 3500);
+    return () => window.clearTimeout(timer);
+  }, [annotationNotice]);
+
+  async function saveAnnotation(
+    selection: TextSelection,
+    color: AnnotationColor,
+    note: string,
+    existing?: Annotation,
+  ) {
+    if (annotationLock.current) return false;
+    annotationLock.current = true;
+    setAnnotationBusy(true);
+    setAnnotationError("");
+    try {
+      const saved = await api<Annotation>(
+        `/books/${id}/annotations${existing ? `/${existing.id}` : ""}`,
+        {
+          method: existing ? "PUT" : "POST",
+          body: JSON.stringify(
+            existing ? { color, note } : { ...selection, color, note },
+          ),
+        },
+      );
+      client.setQueryData<{ items: Annotation[] }>(
+        ["annotations", id],
+        (previous) => ({
+          items: [
+            ...(previous?.items ?? []).filter((item) => item.id !== saved.id),
+            saved,
+          ],
+        }),
+      );
+      setSelected(null);
+      window.getSelection()?.removeAllRanges();
+      setAnnotationNotice(
+        existing ? "기록을 수정했습니다." : "내 기록에 저장했습니다.",
+      );
+      return true;
+    } catch (error) {
+      setAnnotationError((error as Error).message);
+      return false;
+    } finally {
+      annotationLock.current = false;
+      setAnnotationBusy(false);
+    }
+  }
+  async function deleteAnnotation(annotation: Annotation) {
+    if (annotationLock.current) return false;
+    annotationLock.current = true;
+    setAnnotationBusy(true);
+    setAnnotationError("");
+    try {
+      await api(`/books/${id}/annotations/${annotation.id}`, {
+        method: "DELETE",
+      });
+      client.setQueryData<{ items: Annotation[] }>(
+        ["annotations", id],
+        (previous) => ({
+          items: (previous?.items ?? []).filter(
+            (item) => item.id !== annotation.id,
+          ),
+        }),
+      );
+      setAnnotationNotice("기록을 삭제했습니다.");
+      return true;
+    } catch (error) {
+      setAnnotationError((error as Error).message);
+      return false;
+    } finally {
+      annotationLock.current = false;
+      setAnnotationBusy(false);
+    }
+  }
+  function openAnnotation(annotation: Annotation) {
+    setSelected(null);
+    setAnnotationError("");
+    setAnnotationDraft({
+      selection: annotation,
+      existing: annotation,
+      color: annotation.color,
+    });
+    onShowAnnotations(true);
+  }
+  function goToAnnotation(annotation: Annotation) {
+    setSelected(null);
+    setPreview(null);
+    onNavigate({ ...state, page: annotation.page, scroll_offset: 0 });
+    setAnnotationFocus({ id: annotation.id, token: Date.now() });
+    onShowAnnotations(false);
+  }
 
   useEffect(() => {
     let active = true;
@@ -315,6 +467,26 @@ export function PdfView({
           handle={main}
           onScroll={onScroll}
           onSelection={onSelection}
+          annotations={items}
+          annotationFocus={annotationFocus}
+          onAnnotationClick={openAnnotation}
+          onAnnotationSelection={(selection, bounds) => {
+            setSelected(selection);
+            setAnnotationError("");
+            if (bounds && container.current) {
+              const box = container.current.getBoundingClientRect();
+              setSelectionPosition({
+                x: Math.max(
+                  8,
+                  Math.min(box.width - 284, bounds.left - box.left),
+                ),
+                y: Math.max(
+                  8,
+                  Math.min(box.height - 76, bounds.bottom - box.top + 8),
+                ),
+              });
+            }
+          }}
           onReady={navigated}
           onError={failed}
           onLink={openReference}
@@ -323,6 +495,79 @@ export function PdfView({
           }
         />
       )}
+      {selected && (
+        <div
+          className="annotation-selection-tools"
+          role="toolbar"
+          aria-label="선택한 텍스트 기록"
+          style={{ left: selectionPosition.x, top: selectionPosition.y }}
+          onMouseDown={(event) => event.preventDefault()}
+        >
+          <ColorPicker
+            value={color}
+            disabled={annotationBusy}
+            onChange={(next) => {
+              setColor(next);
+              void saveAnnotation(selected, next, "");
+            }}
+          />
+          <span className="annotation-tool-divider" />
+          <button
+            disabled={annotationBusy}
+            onClick={() => {
+              setAnnotationDraft({ selection: selected, color });
+              setSelected(null);
+              onShowAnnotations(true);
+            }}
+          >
+            <MessageSquare size={15} /> 주석
+          </button>
+          <button
+            className="icon-button"
+            aria-label="선택 도구 닫기"
+            disabled={annotationBusy}
+            onClick={() => setSelected(null)}
+          >
+            <X size={14} />
+          </button>
+          {annotationError && (
+            <p className="error" role="alert">
+              {annotationError}
+            </p>
+          )}
+        </div>
+      )}
+      {annotationNotice && (
+        <div className="annotation-toast" role="status">
+          {annotationNotice}
+        </div>
+      )}
+      <div
+        id="reader-annotations"
+        className="annotations-drawer"
+        hidden={!showAnnotations}
+      >
+        <AnnotationsPanel
+          open={showAnnotations}
+          items={items}
+          loading={records.isPending}
+          loadError={records.error?.message ?? ""}
+          retry={() => void records.refetch()}
+          draft={annotationDraft}
+          setDraft={(next) => {
+            setAnnotationDraft(next);
+            setAnnotationError("");
+          }}
+          busy={annotationBusy}
+          error={annotationError}
+          onSave={saveAnnotation}
+          onDelete={deleteAnnotation}
+          onNavigate={goToAnnotation}
+          onClose={() => {
+            onShowAnnotations(false);
+          }}
+        />
+      </div>
       {preview && document && (
         <section
           ref={previewElement}
