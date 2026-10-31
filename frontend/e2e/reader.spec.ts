@@ -60,7 +60,7 @@ test("upload, PDF selection, question, restore, another device, and confirmed de
   await page.getByRole("button", { name: "질문 보내기" }).click();
   await expect(page.locator(".message.assistant")).toContainText("테스트 응답");
   await expect(page.getByRole("button", { name: "답변 중단" })).toHaveCount(0);
-  await expect(page.getByRole("status")).toContainText("저장됨");
+  await expect(page.locator(".reader-save")).toContainText("저장됨");
   await page.route("**/api/books/*/state", (route) =>
     route.request().method() === "PUT"
       ? route.fulfill({ status: 503, json: { detail: "temporary failure" } })

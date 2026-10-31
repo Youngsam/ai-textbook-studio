@@ -1409,3 +1409,140 @@ button.primary:hover:not(:disabled) {
   opacity: 0.55;
   cursor: default;
 }
+
+/* PDF references share the document, but own their viewport and scroll state. */
+.pdf-reference-view {
+  position: relative;
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+.pdf-link-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.pdf-reference-link {
+  position: absolute;
+  pointer-events: auto;
+  cursor: pointer;
+  border-radius: 2px;
+}
+.pdf-reference-link:hover {
+  background: #72977b22;
+  box-shadow: 0 0 0 1px #537b6380;
+}
+.pdf-reference-link:focus-visible {
+  outline: 2px solid #315d45;
+  outline-offset: 2px;
+}
+.reference-back,
+.reference-notice {
+  position: absolute;
+  z-index: 4;
+  top: 8px;
+  left: 12px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: calc(100% - 24px);
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fffef7;
+  box-shadow: 0 2px 8px #0001;
+  font-size: 12px;
+}
+.reference-notice {
+  top: 48px;
+}
+.reference-notice button {
+  flex-shrink: 0;
+}
+.reference-preview {
+  position: absolute;
+  z-index: 6;
+  right: 16px;
+  bottom: 16px;
+  transform: translate(var(--preview-x), var(--preview-y));
+  width: min(440px, calc(100% - 32px));
+  height: 58%;
+  min-width: min(280px, calc(100% - 32px));
+  min-height: 180px;
+  max-width: calc(100% - 32px);
+  max-height: calc(100% - 32px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  resize: both;
+  border: 1px solid #a7b29f;
+  border-radius: 10px;
+  background: #fffef9;
+  box-shadow: 0 10px 35px #15201140;
+}
+.reference-preview-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+  cursor: move;
+  touch-action: none;
+}
+.reference-preview-header strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+.reference-preview-tools {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  font-size: 11px;
+}
+.reference-preview-tools button {
+  padding: 5px 7px;
+}
+.reference-preview-tools button:last-child {
+  margin-left: auto;
+}
+.reference-preview .pdf-scroll {
+  padding: 12px;
+}
+.reference-preview .pdf-paper {
+  box-shadow: 0 1px 6px #0002;
+}
+@media (max-width: 700px) {
+  .reference-preview {
+    right: 0;
+    bottom: 0;
+    transform: none;
+    width: 100%;
+    max-width: 100%;
+    height: 65%;
+    min-height: 150px;
+    max-height: 95%;
+    border-radius: 10px 10px 0 0;
+    resize: vertical;
+  }
+  .reference-preview-header {
+    cursor: default;
+  }
+}
+.reference-height {
+  display: none;
+}
+@media (max-width: 700px) {
+  .reference-preview {
+    height: var(--preview-height, 65%);
+  }
+  .reference-height {
+    display: block;
+    width: 52px;
+    min-width: 0;
+  }
+}

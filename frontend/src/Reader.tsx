@@ -589,6 +589,11 @@ function ReadingRoom({
               state={state}
               onScroll={(offset) => change({ ...state, scroll_offset: offset })}
               onSelection={setSelection}
+              onNavigate={(next) => {
+                change(next);
+                setSelection("");
+                window.getSelection()?.removeAllRanges();
+              }}
             />
             <button
               className="page-side previous"
