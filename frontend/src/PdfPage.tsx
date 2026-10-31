@@ -7,7 +7,8 @@ import {
   type Annotation,
   type TextSelection,
 } from "./annotations";
-import type { ReadingState } from "./api";
+import { CropSelection } from "./CropSelection";
+import type { CropAttachment, ReadingState } from "./api";
 import {
   referencePoint,
   safeWebUrl,
@@ -41,8 +42,14 @@ export function PdfPage({
   onUnsupported,
   onReady,
   onError,
+  cropMode = false,
+  onCrop,
+  onCropCancel,
 }: {
   document: PDFDocumentProxy;
+  cropMode?: boolean;
+  onCrop?: (crop: CropAttachment) => void;
+  onCropCancel?: () => void;
   state: ReadingState;
   request?: PdfRequest;
   handle?: RefObject<PageHandle | null>;
@@ -387,6 +394,15 @@ export function PdfPage({
         style={{ visibility: rendering || error ? "hidden" : "visible" }}
       >
         <canvas ref={canvas} />
+        {cropMode && !rendering && !error && onCrop && onCropCancel && (
+          <CropSelection
+            key={`${state.page}-${state.zoom}`}
+            page={state.page}
+            canvas={canvas}
+            onSelect={onCrop}
+            onCancel={onCropCancel}
+          />
+        )}
         <div ref={layer} className="textLayer" />
         <div className="pdf-highlight-layer">
           {annotations

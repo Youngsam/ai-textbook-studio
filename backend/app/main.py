@@ -651,7 +651,7 @@ def create_app(settings: Settings | None = None, adapter=None):
         path = folder(book_id) / "original.pdf"
         result = await pdf.run("page", path, body.page)
         page_text = result["text"]
-        image = body.image_mode == "always" or (
+        image = body.crop is not None or body.image_mode == "always" or (
             body.image_mode == "auto" and len(page_text.strip()) < 50
         )
         if image and not settings.llm_supports_images:
@@ -660,9 +660,15 @@ def create_app(settings: Settings | None = None, adapter=None):
             raise ValueError("image_required")
         image_url, cache_key = None, None
         if image:
-            cache_key = f"page-{body.page}-2048-v1.jpg"
+            crop = body.crop.model_dump() if body.crop else None
+            suffix = hashlib.sha256(json.dumps(crop, sort_keys=True).encode()).hexdigest()[:20]
+            cache_key = (
+                f"page-{body.page}-crop-{suffix}-v1.jpg"
+                if crop
+                else f"page-{body.page}-2048-v1.jpg"
+            )
             result = await pdf.run(
-                "page", path, body.page, str(folder(book_id) / "images" / cache_key)
+                "page", path, body.page, str(folder(book_id) / "images" / cache_key), crop=crop
             )
             image_bytes = Path(result["image_path"]).read_bytes()
             if len(image_bytes) > 5 * 1024 * 1024:
@@ -671,6 +677,12 @@ def create_app(settings: Settings | None = None, adapter=None):
         prefix = (
             f"책: {title}\nPDF 페이지: {body.page}\n질문: {body.question}\n"
             f"<selected_text>\n{body.selected_text}\n</selected_text>\n"
+            + (
+                "첨부 이미지는 사용자가 선택한 현재 페이지의 일부 영역이다. "
+                "이 영역을 중심으로 답변하고, 수식·행렬은 읽은 내용을 먼저 표시한다. "
+                "불분명한 기호나 원소를 추측하지 말고 확인을 요청한다.\n"
+                if body.crop else ""
+            )
         )
         # UTF-8 bytes are a conservative token upper bound, not a tokenizer estimate.
         remaining = settings.llm_input_token_budget - len((INSTRUCTIONS + prefix).encode()) - 256
@@ -702,6 +714,7 @@ def create_app(settings: Settings | None = None, adapter=None):
             "page_text": clipped,
             "has_text": bool(page_text.strip()),
             "image_attached": image,
+            "crop": body.crop.model_dump() if body.crop else None,
             "image_cache_key": cache_key,
             "policy_version": 1,
             "truncated": len(clipped) < len(page_text),

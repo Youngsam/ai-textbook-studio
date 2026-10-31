@@ -10,6 +10,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { MarkdownContent } from "./MarkdownContent";
 import { BackupSettings } from "./BackupSettings";
 import {
+  Crop,
   ArrowLeft,
   ArrowUp,
   BookOpen,
@@ -29,6 +30,7 @@ import {
 import {
   api,
   streamChat,
+  type CropAttachment,
   type Book,
   type Message,
   type Page,
@@ -130,7 +132,10 @@ function ReadingRoom({
   }
   const [showAnnotations, setShowAnnotations] = useState(false);
   const [selection, setSelection] = useState("");
+  const [cropMode, setCropMode] = useState(false);
+  const [crop, setCrop] = useState<CropAttachment | null>(null);
   const [question, setQuestion] = useState("");
+  const questionInput = useRef<HTMLTextAreaElement>(null);
   const [preferences, setPreferences] = useState({
     provider: settings.provider,
     image_mode: settings.image_mode,
@@ -286,8 +291,9 @@ function ReadingRoom({
     const captured = {
       request_id: requestId,
       question: question.trim(),
-      page: state.page,
-      selected_text: selection,
+      page: crop?.page ?? state.page,
+      crop: crop?.rect ?? null,
+      selected_text: crop ? "" : selection,
       ...preferences,
     };
     try {
@@ -299,6 +305,7 @@ function ReadingRoom({
           const data = event.data;
           if (event.event === "accepted") {
             setQuestion("");
+            if (!retryId) setCrop(null);
             setDraft({
               id: String(data.assistant_message_id),
               role: "assistant",
@@ -563,12 +570,25 @@ function ReadingRoom({
             </details>
             <button
               className="annotations-toggle"
+              aria-label="내 기록"
+              title="내 기록"
               aria-pressed={showAnnotations}
               aria-controls="reader-annotations"
               onClick={() => setShowAnnotations(!showAnnotations)}
             >
               <Highlighter size={16} />
               <span>내 기록</span>
+            </button>
+            <button
+              className={`annotations-toggle crop-toggle ${cropMode ? "is-active" : ""}`}
+              aria-label="영역 선택"
+              aria-pressed={cropMode}
+              title="수식·도표 영역을 드래그해 질문에 추가"
+              disabled={!settings.supports_images || busy}
+              onClick={() => setCropMode(!cropMode)}
+            >
+              <Crop size={16} />
+              <span>영역 선택</span>
             </button>
             <div className="zoom-controls">
               <button
@@ -597,11 +617,22 @@ function ReadingRoom({
           <div className="pdf-stage">
             <PdfView
               id={book.id}
+              cropMode={cropMode}
+              onCropCancel={() => setCropMode(false)}
+              onCrop={(next) => {
+                setCrop(next);
+                setCropMode(false);
+                setSelection("");
+                questionInput.current?.focus();
+              }}
               showAnnotations={showAnnotations}
               onShowAnnotations={setShowAnnotations}
               state={state}
               onScroll={(offset) => change({ ...state, scroll_offset: offset })}
-              onSelection={setSelection}
+              onSelection={(text) => {
+                setSelection(text);
+                if (text) setCrop(null);
+              }}
               onNavigate={(next) => {
                 change(next);
                 setSelection("");
@@ -887,7 +918,11 @@ function ReadingRoom({
                   {message.role === "user" ? "나의 질문" : "학습 도우미"}
                   <span>
                     PDF {message.page}쪽
-                    {message.context_snapshot.image_attached ? " · 이미지" : ""}
+                    {message.context_snapshot.crop
+                      ? " · 선택 영역"
+                      : message.context_snapshot.image_attached
+                        ? " · 이미지"
+                        : ""}
                   </span>
                 </div>
                 {message.selected_text && message.role === "user" && (
@@ -930,14 +965,32 @@ function ReadingRoom({
           <div className="composer">
             <div className="context-chip">
               <span>
-                <BookOpen size={13} /> PDF {state.page}쪽 ·{" "}
-                {preferences.image_mode === "always"
-                  ? "이미지 첨부"
-                  : preferences.image_mode === "never"
-                    ? "텍스트 문맥"
-                    : "이미지 자동"}
+                <BookOpen size={13} /> PDF {crop?.page ?? state.page}쪽 ·{" "}
+                {crop
+                  ? "선택 영역 첨부"
+                  : preferences.image_mode === "always"
+                    ? "이미지 첨부"
+                    : preferences.image_mode === "never"
+                      ? "텍스트 문맥"
+                      : "이미지 자동"}
               </span>
             </div>
+            {crop && (
+              <div className="crop-attachment">
+                <img src={crop.preview} alt={`PDF ${crop.page}쪽 선택 영역`} />
+                <span>
+                  <strong>선택 영역</strong>
+                  <small>PDF {crop.page}쪽 · 이미지 첨부</small>
+                </span>
+                <button
+                  className="icon-button"
+                  aria-label="선택 영역 첨부 해제"
+                  onClick={() => setCrop(null)}
+                >
+                  <X size={14} />
+                </button>
+              </div>
+            )}
             {selection && (
               <div className="selection-chip">
                 <span>“{selection}”</span>
@@ -957,6 +1010,7 @@ function ReadingRoom({
             )}
             <form onSubmit={send}>
               <textarea
+                ref={questionInput}
                 aria-label="질문"
                 placeholder="이 페이지에서 궁금한 점을 질문하세요…"
                 value={question}

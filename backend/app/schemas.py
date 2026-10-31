@@ -38,20 +38,6 @@ class Preferences(BaseModel):
         return value.strip() if value is not None else None
 
 
-class Question(Preferences):
-    request_id: UUID
-    question: str = Field(min_length=1, max_length=8000)
-    page: int = Field(ge=1)
-    selected_text: str = Field(default="", max_length=12000)
-
-    @field_validator("question")
-    @classmethod
-    def not_blank(cls, value):
-        if not value.strip():
-            raise ValueError("질문을 입력해 주세요.")
-        return value.strip()
-
-
 class AnnotationRect(BaseModel):
     x: float = Field(ge=0, le=1, allow_inf_nan=False)
     y: float = Field(ge=0, le=1, allow_inf_nan=False)
@@ -65,6 +51,21 @@ class AnnotationRect(BaseModel):
         if origin + value > 1.000001:
             raise ValueError("선택 영역이 페이지 범위를 벗어났습니다.")
         return value
+
+
+class Question(Preferences):
+    crop: AnnotationRect | None = None
+    request_id: UUID
+    question: str = Field(min_length=1, max_length=8000)
+    page: int = Field(ge=1)
+    selected_text: str = Field(default="", max_length=12000)
+
+    @field_validator("question")
+    @classmethod
+    def not_blank(cls, value):
+        if not value.strip():
+            raise ValueError("질문을 입력해 주세요.")
+        return value.strip()
 
 
 class AnnotationUpdate(BaseModel):

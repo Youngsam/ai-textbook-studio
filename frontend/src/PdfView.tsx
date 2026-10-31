@@ -7,7 +7,7 @@ import {
 import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import "pdfjs-dist/web/pdf_viewer.css";
 import { ArrowLeft, MessageSquare, Minus, Plus, X } from "lucide-react";
-import { api, type ReadingState } from "./api";
+import { api, type CropAttachment, type ReadingState } from "./api";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AnnotationsPanel,
@@ -45,8 +45,14 @@ export function PdfView({
   onNavigate,
   showAnnotations,
   onShowAnnotations,
+  cropMode,
+  onCrop,
+  onCropCancel,
 }: {
   id: string;
+  cropMode: boolean;
+  onCrop: (crop: CropAttachment) => void;
+  onCropCancel: () => void;
   showAnnotations: boolean;
   onShowAnnotations: (value: boolean) => void;
   state: ReadingState;
@@ -462,6 +468,9 @@ export function PdfView({
       {document && (
         <PdfPage
           document={document}
+          cropMode={cropMode}
+          onCrop={onCrop}
+          onCropCancel={onCropCancel}
           state={state}
           request={request}
           handle={main}

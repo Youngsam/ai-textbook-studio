@@ -101,6 +101,22 @@ try {
   await selectPassage(235, 260);
   await expect(page.locator(".selection-chip")).toBeVisible();
   await capture("select-and-ask");
+  // Capture the same formula as a region attachment, using the real selection UI.
+  await page.getByRole("button", { name: "선택 문구 해제" }).click();
+  await page.evaluate(() => window.getSelection()?.removeAllRanges());
+  await page.getByRole("button", { name: "영역 선택", exact: true }).click();
+  const bounds = await page.locator(".crop-overlay").boundingBox();
+  if (!bounds) throw new Error("Region selection overlay not found");
+  await page.mouse.move(bounds.x + 55, bounds.y + 280);
+  await page.mouse.down();
+  await page.mouse.move(bounds.x + 540, bounds.y + 360);
+  await page.mouse.up();
+  await expect(page.locator(".crop-outline")).toBeVisible();
+  await capture("select-region");
+  await page.getByRole("button", { name: "질문에 추가" }).click();
+  await expect(page.locator(".crop-attachment img")).toBeVisible();
+  await page.getByLabel("질문", { exact: true }).fill("선택한 수식을 먼저 읽고, 분모가 P(B)인 이유를 설명해 줘.");
+  await capture("region-attachment");
   const answer = `파란 카드라는 **조건에 맞는 카드만** 모아서 생각하면 됩니다.
 
 - 전체 카드: 10장
@@ -192,7 +208,7 @@ flowchart LR
     );
   await capture("add-note");
   if (consoleErrors.length) throw new Error(consoleErrors.join("\n"));
-  console.log("Captured four README screenshots from the current app.");
+  console.log("Captured six README screenshots from the current app.");
 } finally {
   if (book) await page.request.delete(`${base}/api/books/${book.id}`);
   await browser.close();

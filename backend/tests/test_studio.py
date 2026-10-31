@@ -897,3 +897,70 @@ def test_annotations_persist_scope_validate_and_cascade(settings):
         assert client.delete(f"/api/books/{book['id']}").status_code == 204
         with client.app.state.Session() as session:
             assert session.scalar(select(func.count()).select_from(Annotation)) == 0
+
+
+def test_crop_attaches_image_despite_never_mode(client, settings):
+    book = upload(client)
+    crop = {"x": 0.05, "y": 0.05, "width": 0.45, "height": 0.2}
+    response, body = ask(client, book, crop=crop, image_mode="never")
+    stream = events(response)
+    context = next(data for kind, data in stream if kind == "context")
+    assert stream[-1][0] == "completed"
+    assert context["image_attached"] and context["crop"] == crop
+    image = settings.data_dir / "books" / book["id"] / "images" / context["image_cache_key"]
+    pix = pymupdf.Pixmap(str(image))
+    # This must be the selected region, rendered at higher resolution than the page.
+    assert 1069 <= pix.width <= 1073
+    assert 672 <= pix.height <= 676
+
+
+
+@pytest.mark.parametrize("crop", [
+    {"x": 0.9, "y": 0, "width": 0.2, "height": 0.2},
+    {"x": 0, "y": 0, "width": 0, "height": 0.2},
+    {"x": -0.1, "y": 0, "width": 0.2, "height": 0.2},
+])
+def test_crop_rejects_invalid_bounds(client, crop):
+    book = upload(client)
+    assert ask(client, book, crop=crop)[0].status_code == 422
+
+
+def test_crop_requires_image_support(settings):
+    settings.llm_supports_images = False
+    with TestClient(create_app(settings)) as client:
+        book = upload(client)
+        result = events(ask(client, book, crop={"x": 0, "y": 0, "width": 0.5, "height": 0.5})[0])
+        assert result[-1][1]["code"] == "images_unsupported"
+
+
+def test_failed_crop_retry_preserves_region(settings):
+    crop = {"x": 0.1, "y": 0.1, "width": 0.5, "height": 0.3}
+    with TestClient(create_app(settings, adapter=FailingAdapter())) as client:
+        book = upload(client)
+        response, body = ask(client, book, crop=crop, image_mode="never")
+        assert events(response)[-1][0] == "failed"
+    with TestClient(create_app(settings)) as client:
+        result = events(client.post(f"/api/books/{book['id']}/chat/{body['request_id']}/retry"))
+        context = next(data for kind, data in result if kind == "context")
+        assert context["crop"] == crop and context["image_attached"]
+        assert result[-1][0] == "completed"
+
+
+@pytest.mark.parametrize("rotation", [0, 90, 180, 270])
+def test_crop_matches_display_coordinates_with_rotation(tmp_path, rotation):
+    from app.pdf import PdfService
+
+    path = tmp_path / "rotated.pdf"
+    image = tmp_path / "crop.jpg"
+    with pymupdf.open() as doc:
+        page = doc.new_page(width=400, height=300)
+        page.draw_rect(pymupdf.Rect(0, 0, 200, 150), fill=(1, 0, 0), color=None)
+        page.set_rotation(rotation)
+        doc.save(path)
+        full = page.get_pixmap()
+        expected = full.pixel(int(full.width * 0.15), int(full.height * 0.15))
+    service = PdfService(30)
+    asyncio.run(service.run("page", path, 1, str(image),
+        crop={"x": 0.1, "y": 0.1, "width": 0.1, "height": 0.1}))
+    actual = pymupdf.Pixmap(str(image))
+    assert all(abs(a - b) < 5 for a, b in zip(actual.pixel(actual.width // 2, actual.height // 2), expected))

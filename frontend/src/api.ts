@@ -1,3 +1,5 @@
+export type CropRect = { x: number; y: number; width: number; height: number };
+export type CropAttachment = { page: number; rect: CropRect; preview: string };
 export type Book = {
   id: string;
   title: string;
@@ -49,7 +51,11 @@ export type Message = {
   status: string;
   request_id: string;
   error_code: string | null;
-  context_snapshot: { image_attached?: boolean; truncated?: boolean };
+  context_snapshot: {
+    image_attached?: boolean;
+    crop?: CropRect | null;
+    truncated?: boolean;
+  };
 };
 export type Page<T> = { items: T[]; next_cursor: string | null };
 

@@ -13,7 +13,7 @@ from app.outline import detect_outline
 OUTLINE_CACHE_VERSION = 2
 
 
-def _worker(pipe, operation, path, page, image_path, outline_options):
+def _worker(pipe, operation, path, page, image_path, outline_options, crop=None):
     try:
         with pymupdf.open(path) as document:
             if document.needs_pass or not document.is_pdf or document.page_count < 1:
@@ -55,9 +55,16 @@ def _worker(pipe, operation, path, page, image_path, outline_options):
                 if image_path:
                     target = Path(image_path)
                     if not target.exists():
-                        scale = min(2, 2048 / max(current.rect.width, current.rect.height))
+                        bounds = current.rect
+                        if crop:
+                            bounds = pymupdf.Rect(
+                                crop["x"] * bounds.width, crop["y"] * bounds.height,
+                                (crop["x"] + crop["width"]) * bounds.width,
+                                (crop["y"] + crop["height"]) * bounds.height,
+                            )
+                        scale = min(4 if crop else 2, 2048 / max(bounds.width, bounds.height))
                         pixmap = current.get_pixmap(
-                            matrix=pymupdf.Matrix(scale, scale), alpha=False
+                            matrix=pymupdf.Matrix(scale, scale), clip=bounds, alpha=False
                         )
                         target.parent.mkdir(parents=True, exist_ok=True)
                         temporary = target.with_suffix(".tmp")
@@ -78,13 +85,13 @@ class PdfService:
         self.outline_options = outline_options or {}
         self.lock = asyncio.Semaphore(1)
 
-    async def run(self, operation, path, page=1, image_path=None):
+    async def run(self, operation, path, page=1, image_path=None, crop=None):
         async with self.lock:
             context = multiprocessing.get_context("spawn")
             reader, writer = context.Pipe(duplex=False)
             process = context.Process(
                 target=_worker,
-                args=(writer, operation, str(path), page, image_path, self.outline_options),
+                args=(writer, operation, str(path), page, image_path, self.outline_options, crop),
             )
             process.start()
             writer.close()
