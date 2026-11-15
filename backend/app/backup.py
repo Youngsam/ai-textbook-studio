@@ -1,10 +1,12 @@
 """Portable snapshots: a standalone SQLite database and immutable original PDFs."""
 
+import ctypes
 import hashlib
 import json
 import re
 import shutil
 import sqlite3
+import sys
 import tempfile
 from contextlib import closing
 from datetime import datetime, timezone
@@ -15,6 +17,19 @@ from app.config import Settings
 
 INTERVAL_SECONDS = 30 * 60
 RETAIN_COUNT = 10
+
+
+def copy_pdf(source: Path, output: Path):
+    """Use independent copy-on-write files on macOS; otherwise copy normally."""
+    if sys.platform == "darwin":
+        # Unlike hard links, clones isolate subsequent writes to either file.
+        # clonefile fails without creating output on unsupported/cross-volume copies.
+        clonefile = ctypes.CDLL(None, use_errno=True).clonefile
+        clonefile.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_int]
+        clonefile.restype = ctypes.c_int
+        if clonefile(bytes(source), bytes(output), 0) == 0:
+            return
+    shutil.copyfile(source, output)
 
 
 def fingerprint(connection):
@@ -142,7 +157,7 @@ def create_backup(engine, settings: Settings, target: Path):
             source = settings.data_dir / "books" / book_id / "original.pdf"
             output = stage / "books" / book_id / "original.pdf"
             output.parent.mkdir()
-            shutil.copyfile(source, output)
+            copy_pdf(source, output)
             with output.open("rb") as file:
                 if hashlib.file_digest(file, "sha256").hexdigest() != digest:
                     raise ValueError("원본 PDF 검증에 실패했습니다. 데이터 파일을 확인해 주세요.")

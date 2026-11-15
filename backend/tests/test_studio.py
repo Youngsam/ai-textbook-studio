@@ -649,7 +649,7 @@ def test_backup_paths_and_incomplete_backup_cleanup(client, settings, tmp_path, 
         def denied(*args, **kwargs):
             raise PermissionError("disk unavailable")
 
-        monkeypatch.setattr(backup_module.shutil, "copyfile", denied)
+        monkeypatch.setattr(backup_module, "copy_pdf", denied)
         assert client.post("/api/backups").status_code == 503
         assert list(target.iterdir()) == []
     finally:
