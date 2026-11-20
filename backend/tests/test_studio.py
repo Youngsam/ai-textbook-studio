@@ -115,6 +115,18 @@ def test_upload_range_state_restart_and_delete(settings):
                 assert session.scalar(select(func.count()).select_from(model)) == 0
 
 
+def test_rename_book(client):
+    book = upload(client)
+    url = f"/api/books/{book['id']}"
+    response = client.patch(url, json={"title": "  선형대수  ", "author": " 강 "})
+    assert response.status_code == 200
+    assert (response.json()["title"], response.json()["author"]) == ("선형대수", "강")
+    assert client.get(url).json()["title"] == "선형대수"
+    for body in ({"title": "   "}, {"title": "x" * 301}, {"title": "ok", "author": "x" * 301}):
+        assert client.patch(url, json=body).status_code == 422
+    assert client.patch(f"/api/books/{uuid4()}", json={"title": "x"}).status_code == 404
+
+
 def test_bad_upload_cleanup(client, settings):
     for content in (b"not a PDF", b"%PDF-1.7 invalid document"):
         response = client.post(

@@ -38,6 +38,23 @@ class Preferences(BaseModel):
         return value.strip() if value is not None else None
 
 
+class BookUpdate(BaseModel):
+    title: str = Field(max_length=300)
+    author: str = Field(default="", max_length=300)
+
+    @field_validator("title", "author")
+    @classmethod
+    def clean(cls, value):
+        return value.strip()
+
+    @field_validator("title")
+    @classmethod
+    def title_required(cls, value):
+        if not value:
+            raise ValueError("제목을 입력해 주세요.")
+        return value
+
+
 class AnnotationRect(BaseModel):
     x: float = Field(ge=0, le=1, allow_inf_nan=False)
     y: float = Field(ge=0, le=1, allow_inf_nan=False)
