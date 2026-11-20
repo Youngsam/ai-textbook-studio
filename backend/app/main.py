@@ -46,6 +46,7 @@ from app.schemas import (
     AnnotationCreate,
     AnnotationUpdate,
     BackupPreferences,
+    BookUpdate,
     ModelSelection,
     Preferences,
     Question,
@@ -485,6 +486,13 @@ def create_app(settings: Settings | None = None, adapter=None):
         with Session.begin() as session:
             book = get_book(session, book_id)
             book.last_opened_at = now()
+            return summary(session, book)
+
+    @app.patch("/api/books/{book_id}")
+    def update_book(book_id: UUID, body: BookUpdate):
+        with Session.begin() as session:
+            book = get_book(session, book_id)
+            book.title, book.author = body.title, body.author
             return summary(session, book)
 
     @app.get("/api/books/{book_id}/pdf")

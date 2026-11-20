@@ -7,6 +7,7 @@ import {
   Grid2x2,
   LayoutGrid,
   List,
+  Pencil,
   Plus,
   Settings2,
   Trash2,
@@ -53,6 +54,9 @@ export function Library() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [deleting, setDeleting] = useState<Book | null>(null);
+  const [editing, setEditing] = useState<Book | null>(null);
+  const [editTitle, setEditTitle] = useState("");
+  const [editAuthor, setEditAuthor] = useState("");
   const items = books.data?.pages.flatMap((page) => page.items) ?? [];
 
   function changeView(mode: ViewMode) {
@@ -85,6 +89,32 @@ export function Library() {
       setTitle("");
       setAuthor("");
       setFile(null);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function openEdit(book: Book) {
+    setError("");
+    setEditTitle(book.title);
+    setEditAuthor(book.author);
+    setEditing(book);
+  }
+
+  async function saveEdit(event: FormEvent) {
+    event.preventDefault();
+    if (!editing || !editTitle.trim() || busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      await api<Book>(`/books/${editing.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ title: editTitle, author: editAuthor }),
+      });
+      setEditing(null);
+      await client.invalidateQueries({ queryKey: ["books"] });
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -160,7 +190,7 @@ export function Library() {
             </div>
           </div>
         </div>
-        {error && !adding && !deleting && (
+        {error && !adding && !deleting && !editing && (
           <p role="alert" className="error">
             {error}
           </p>
@@ -197,6 +227,13 @@ export function Library() {
                 <span className="row-date">
                   {new Date(book.last_opened_at).toLocaleDateString("ko-KR")}
                 </span>
+                <button
+                  className="icon-button"
+                  aria-label={`${book.title} 편집`}
+                  onClick={() => openEdit(book)}
+                >
+                  <Pencil size={15} />
+                </button>
                 <button
                   className="icon-button"
                   aria-label={`${book.title} 삭제`}
@@ -236,16 +273,25 @@ export function Library() {
                 </Link>
                 <div className="book-details">
                   <Link to={`/books/${book.id}`}>{book.title}</Link>
-                  <button
-                    className="icon-button"
-                    aria-label={`${book.title} 삭제`}
-                    onClick={() => {
-                      setError("");
-                      setDeleting(book);
-                    }}
-                  >
-                    <Trash2 size={15} />
-                  </button>
+                  <span className="book-actions">
+                    <button
+                      className="icon-button"
+                      aria-label={`${book.title} 편집`}
+                      onClick={() => openEdit(book)}
+                    >
+                      <Pencil size={15} />
+                    </button>
+                    <button
+                      className="icon-button"
+                      aria-label={`${book.title} 삭제`}
+                      onClick={() => {
+                        setError("");
+                        setDeleting(book);
+                      }}
+                    >
+                      <Trash2 size={15} />
+                    </button>
+                  </span>
                 </div>
                 <div className="book-progress">
                   <span>
@@ -370,6 +416,59 @@ export function Library() {
                 disabled={busy || !file || !title.trim()}
               >
                 {busy ? "PDF 분석 중…" : "학습 프로젝트 만들기"}
+              </button>
+            </form>
+          </section>
+        </div>
+      )}
+      {editing && (
+        <div className="modal-backdrop">
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="edit-title"
+            className="modal"
+          >
+            <button
+              className="modal-close icon-button"
+              aria-label="닫기"
+              disabled={busy}
+              onClick={() => setEditing(null)}
+            >
+              <X />
+            </button>
+            <h2 id="edit-title">책 정보 편집</h2>
+            <form onSubmit={saveEdit}>
+              <label>
+                책 제목
+                <input
+                  autoFocus
+                  value={editTitle}
+                  maxLength={300}
+                  required
+                  disabled={busy}
+                  onChange={(e) => setEditTitle(e.target.value)}
+                />
+              </label>
+              <label>
+                저자 <span className="muted">선택</span>
+                <input
+                  value={editAuthor}
+                  maxLength={300}
+                  disabled={busy}
+                  onChange={(e) => setEditAuthor(e.target.value)}
+                />
+              </label>
+              {error && (
+                <p role="alert" className="error">
+                  {error}
+                </p>
+              )}
+              <button
+                className="primary full-width"
+                disabled={busy || !editTitle.trim()}
+              >
+                {busy ? "저장 중…" : "저장"}
               </button>
             </form>
           </section>

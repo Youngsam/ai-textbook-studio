@@ -322,7 +322,7 @@ button.primary:hover:not(:disabled) {
 }
 .book-row {
   display: grid;
-  grid-template-columns: 36px minmax(0, 1fr) 220px 90px 28px;
+  grid-template-columns: 36px minmax(0, 1fr) 220px 90px 28px 28px;
   align-items: center;
   gap: 18px;
   padding: 12px 16px;
@@ -397,7 +397,7 @@ button.primary:hover:not(:disabled) {
 }
 @media (max-width: 700px) {
   .book-row {
-    grid-template-columns: 36px minmax(0, 1fr) 28px;
+    grid-template-columns: 36px minmax(0, 1fr) 28px 28px;
     gap: 12px;
   }
   .row-progress {
@@ -488,6 +488,11 @@ button.primary:hover:not(:disabled) {
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
+}
+.book-actions {
+  display: flex;
+  gap: 2px;
+  flex-shrink: 0;
 }
 .book-progress {
   display: flex;
