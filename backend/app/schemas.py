@@ -38,6 +38,19 @@ class Preferences(BaseModel):
         return value.strip() if value is not None else None
 
 
+class SettingsUpdate(Preferences):
+    # Blank provider means page translation follows the explanation model.
+    translation_provider: Provider | Literal[""] | None = None
+    translation_model: str | None = Field(default=None, max_length=200)
+
+    @field_validator("translation_model")
+    @classmethod
+    def clean_translation_model(cls, value):
+        if value is not None and ("\n" in value or "\r" in value):
+            raise ValueError("모델명은 한 줄로 입력해 주세요.")
+        return value.strip() if value is not None else None
+
+
 class BookUpdate(BaseModel):
     title: str = Field(max_length=300)
     author: str = Field(default="", max_length=300)

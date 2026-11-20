@@ -13,6 +13,57 @@ from app.outline import detect_outline
 OUTLINE_CACHE_VERSION = 2
 
 
+def detect_figures(page, limit=8, gap=24):
+    """Find embedded images and vector drawings large enough to be figures.
+
+    Returns normalized rects in displayed (rotation-applied) page coordinates,
+    the same space used by user crops.
+    """
+    area = page.rect
+    candidates = [pymupdf.Rect(info["bbox"]) for info in page.get_image_info()]
+    try:
+        candidates += page.cluster_drawings()
+    except Exception:
+        pass
+    # Pad by half the gap so separated marks (bars, points, labels' boxes) merge first.
+    pad = gap / 2
+    rects = []
+    for rect in candidates:
+        rect = (rect * page.rotation_matrix) & area
+        if not rect.is_empty:
+            rects.append(rect + (-pad, -pad, pad, pad))
+    merged = True
+    while merged:
+        merged = False
+        for i in range(len(rects)):
+            for j in range(i + 1, len(rects)):
+                if rects[i].intersects(rects[j]):
+                    rects[i] |= rects.pop(j)
+                    merged = True
+                    break
+            if merged:
+                break
+    figures = []
+    for rect in rects:
+        rect = (rect + (pad - 4, pad - 4, 4 - pad, 4 - pad)) & area
+        # Skip rules, small glyph art, and full-page scans or backgrounds.
+        if rect.width < area.width * 0.15 or rect.height < area.height * 0.06:
+            continue
+        if rect.width * rect.height > area.width * area.height * 0.85:
+            continue
+        figures.append(rect)
+    figures.sort(key=lambda rect: (rect.y0, rect.x0))
+    return [
+        {
+            "x": round(rect.x0 / area.width, 4),
+            "y": round(rect.y0 / area.height, 4),
+            "width": round(rect.width / area.width, 4),
+            "height": round(rect.height / area.height, 4),
+        }
+        for rect in figures[:limit]
+    ]
+
+
 def _worker(pipe, operation, path, page, image_path, outline_options, crop=None):
     try:
         with pymupdf.open(path) as document:
@@ -49,6 +100,8 @@ def _worker(pipe, operation, path, page, image_path, outline_options, crop=None)
                             )
                         )
                         temporary.replace(cache)
+            elif operation == "figures":
+                result = {"figures": detect_figures(document[page - 1])}
             else:
                 current = document[page - 1]
                 result = {"text": current.get_text(sort=True)}

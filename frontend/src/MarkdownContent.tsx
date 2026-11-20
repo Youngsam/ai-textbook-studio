@@ -1,5 +1,8 @@
-import { lazy, memo, Suspense } from "react";
-import ReactMarkdown, { type Components } from "react-markdown";
+import { lazy, memo, Suspense, useMemo } from "react";
+import ReactMarkdown, {
+  defaultUrlTransform,
+  type Components,
+} from "react-markdown";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
 import "katex/dist/katex.min.css";
@@ -26,13 +29,49 @@ const markdownComponents: Components = {
   },
 };
 
+export type FigureSource = { src: string; width: number };
+
+// Translations reference cropped page figures as figure:N; nothing else loads as an image.
+function figureComponents(
+  figure: (index: number) => FigureSource | undefined,
+): Components {
+  return {
+    ...markdownComponents,
+    img({ src, alt }) {
+      const match = /^figure:(\d+)$/.exec(String(src ?? ""));
+      const source = match ? figure(Number(match[1])) : undefined;
+      if (!source) return alt ? <span>{alt}</span> : null;
+      return (
+        <img
+          className="translation-figure"
+          src={source.src}
+          alt={alt ?? ""}
+          loading="lazy"
+          style={{ width: `${Math.min(100, source.width * 100)}%` }}
+        />
+      );
+    },
+  };
+}
+
+const keepFigureUrls = (url: string) =>
+  /^figure:\d+$/.test(url) ? url : defaultUrlTransform(url);
+
 export const MarkdownContent = memo(function MarkdownContent({
   children,
+  figure,
 }: {
   children: string;
+  /** Resolves figure:N to an image and its width as a fraction of the text column. */
+  figure?: (index: number) => FigureSource | undefined;
 }) {
+  const components = useMemo(
+    () => (figure ? figureComponents(figure) : markdownComponents),
+    [figure],
+  );
   return (
     <ReactMarkdown
+      urlTransform={figure ? keepFigureUrls : defaultUrlTransform}
       remarkPlugins={remarkPlugins}
       rehypePlugins={[
         [
@@ -45,7 +84,7 @@ export const MarkdownContent = memo(function MarkdownContent({
           },
         ],
       ]}
-      components={markdownComponents}
+      components={components}
     >
       {normalizeMath(children)}
     </ReactMarkdown>

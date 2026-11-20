@@ -1,5 +1,6 @@
 import {
   useEffect,
+  useMemo,
   useRef,
   useState,
   type FormEvent,
@@ -17,7 +18,9 @@ import {
   Highlighter,
   ChevronLeft,
   ChevronRight,
+  Languages,
   List,
+  LoaderCircle,
   MessageSquare,
   Minus,
   Plus,
@@ -34,6 +37,7 @@ import {
   type Book,
   type Message,
   type Page,
+  type PageTranslation,
   type Outline,
   type Provider,
   type ReadingState,
@@ -81,6 +85,20 @@ function ReaderLoader({ id }: { id: string }) {
       initial={state.data}
       settings={settings.data}
     />
+  );
+}
+
+type ModelResult = { ok: boolean; message: string };
+
+function ProviderOptions({ fake }: { fake: boolean }) {
+  return (
+    <>
+      <option value="openai">OpenAI</option>
+      <option value="claude">Claude (Anthropic)</option>
+      <option value="gemini">Gemini (Google)</option>
+      <option value="openrouter">OpenRouter</option>
+      {fake && <option value="fake">테스트 모드</option>}
+    </>
   );
 }
 
@@ -147,11 +165,14 @@ function ReadingRoom({
     provider: settings.provider,
     model: settings.model,
   });
+  const [translationDraft, setTranslationDraft] = useState({
+    provider: settings.translation_provider,
+    model: settings.translation_model,
+  });
   const [testingModel, setTestingModel] = useState(false);
-  const [modelResult, setModelResult] = useState<{
-    ok: boolean;
-    message: string;
-  } | null>(null);
+  const [modelResult, setModelResult] = useState<ModelResult | null>(null);
+  const [translationResult, setTranslationResult] =
+    useState<ModelResult | null>(null);
   const [showOutline, setShowOutline] = useState(false);
   const [outlinePageOffset, setOutlinePageOffset] = useState(() => {
     try {
@@ -225,6 +246,111 @@ function ReadingRoom({
     chatBottom.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [draft?.content, history.data?.items.length]);
 
+  // Translation is a per-page view: turning the page always returns to the original.
+  const [showTranslation, setShowTranslation] = useState(false);
+  const [translating, setTranslating] = useState<number[]>([]);
+  const [translationError, setTranslationError] = useState<{
+    page: number;
+    message: string;
+  } | null>(null);
+  const currentPage = useRef(state.page);
+  useEffect(() => {
+    currentPage.current = state.page;
+    setShowTranslation(false);
+  }, [state.page]);
+  const translation = useQuery({
+    queryKey: ["translation", book.id, state.page],
+    queryFn: () =>
+      api<PageTranslation | null>(
+        `/books/${book.id}/pages/${state.page}/translation`,
+      ),
+    staleTime: Infinity,
+  });
+  // Match the rendered PDF page so switching views keeps the same width and zoom feel.
+  const pdfStage = useRef<HTMLDivElement>(null);
+  const [paperWidth, setPaperWidth] = useState<number | null>(null);
+  useEffect(() => {
+    if (!showTranslation) return;
+    const paper = pdfStage.current?.querySelector<HTMLElement>(
+      ".pdf-reference-view > .pdf-scroll > .pdf-paper",
+    );
+    if (!paper) return;
+    const observer = new ResizeObserver(() => setPaperWidth(paper.offsetWidth));
+    observer.observe(paper);
+    return () => observer.disconnect();
+  }, [showTranslation]);
+  const translationFigure = useMemo(() => {
+    const data = translation.data;
+    if (!data?.figures.length) return undefined;
+    return (index: number) => {
+      const rect = data.figures[index - 1];
+      if (!rect) return undefined;
+      return {
+        // created_at changes on retranslation and busts the browser cache.
+        src: `/api/books/${book.id}/pages/${data.page}/translation/figures/${index}?v=${encodeURIComponent(data.created_at)}`,
+        // The text column is the page minus 8.5% margins on each side.
+        width: rect.width / 0.83,
+      };
+    };
+  }, [book.id, translation.data]);
+  const pageTranslating = translating.includes(state.page);
+  const canTranslate = translation.data
+    ? true
+    : !translation.isPending &&
+      !pageTranslating &&
+      settings.translation_configured;
+
+  async function translate(page: number) {
+    if (translating.includes(page)) return;
+    setTranslating((pages) => [...pages, page]);
+    setTranslationError(null);
+    try {
+      const result = await api<PageTranslation>(
+        `/books/${book.id}/pages/${page}/translation`,
+        { method: "POST" },
+      );
+      client.setQueryData(["translation", book.id, page], result);
+      // Leaving the page keeps the result cached without pulling the reader back.
+      if (currentPage.current === page) {
+        setCropMode(false);
+        setShowTranslation(true);
+      }
+    } catch (e) {
+      setTranslationError({ page, message: (e as Error).message });
+    } finally {
+      setTranslating((pages) => pages.filter((p) => p !== page));
+    }
+  }
+
+  function toggleTranslation() {
+    if (showTranslation) setShowTranslation(false);
+    else if (translation.data) {
+      setCropMode(false);
+      setShowTranslation(true);
+    } else if (canTranslate) void translate(state.page);
+  }
+
+  const toggleTranslationRef = useRef(toggleTranslation);
+  toggleTranslationRef.current = toggleTranslation;
+  useEffect(() => {
+    const shortcut = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement;
+      if (
+        event.key.toLowerCase() !== "t" ||
+        event.metaKey ||
+        event.ctrlKey ||
+        event.altKey ||
+        target.isContentEditable ||
+        ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName)
+      )
+        return;
+      event.preventDefault();
+      toggleTranslationRef.current();
+    };
+    window.addEventListener("keydown", shortcut);
+    return () => window.removeEventListener("keydown", shortcut);
+  }, []);
+
   function pageTo(page: number) {
     change({
       ...state,
@@ -235,7 +361,10 @@ function ReadingRoom({
     window.getSelection()?.removeAllRanges();
   }
 
-  async function savePreferences(next: typeof preferences) {
+  async function savePreferences(
+    next: typeof preferences &
+      Partial<Pick<Settings, "translation_provider" | "translation_model">>,
+  ) {
     if (savingPreferences) return;
     setSavingPreferences(true);
     try {
@@ -258,23 +387,23 @@ function ReadingRoom({
     }
   }
 
-  async function testModel() {
+  async function testModel(
+    selection: { provider: Provider | ""; model: string },
+    report: (result: ModelResult | null) => void,
+  ) {
     setTestingModel(true);
-    setModelResult(null);
+    report(null);
     try {
-      const result = await api<{ ok: boolean; message: string }>(
-        "/settings/test",
-        {
-          method: "POST",
-          body: JSON.stringify({
-            ...modelDraft,
-            model: modelDraft.model.trim(),
-          }),
-        },
-      );
-      setModelResult(result);
+      const result = await api<ModelResult>("/settings/test", {
+        method: "POST",
+        body: JSON.stringify({
+          ...selection,
+          model: selection.model.trim(),
+        }),
+      });
+      report(result);
     } catch (e) {
-      setModelResult({ ok: false, message: (e as Error).message });
+      report({ ok: false, message: (e as Error).message });
     } finally {
       setTestingModel(false);
     }
@@ -580,11 +709,36 @@ function ReadingRoom({
               <span>내 기록</span>
             </button>
             <button
+              className={`annotations-toggle translate-toggle ${showTranslation ? "is-active" : ""}`}
+              title={
+                settings.translation_configured || translation.data
+                  ? "이 페이지를 한국어로 번역 (T)"
+                  : "AI 설정에서 API 키와 모델을 먼저 설정해 주세요"
+              }
+              disabled={!showTranslation && !canTranslate}
+              onClick={toggleTranslation}
+            >
+              {pageTranslating && !showTranslation ? (
+                <LoaderCircle size={16} className="spin" />
+              ) : (
+                <Languages size={16} />
+              )}
+              <span>
+                {showTranslation
+                  ? "원문 보기"
+                  : pageTranslating
+                    ? "번역 중…"
+                    : translation.data
+                      ? "번역 보기"
+                      : "번역"}
+              </span>
+            </button>
+            <button
               className={`annotations-toggle crop-toggle ${cropMode ? "is-active" : ""}`}
               aria-label="영역 선택"
               aria-pressed={cropMode}
               title="수식·도표 영역을 드래그해 질문에 추가"
-              disabled={!settings.supports_images || busy}
+              disabled={!settings.supports_images || busy || showTranslation}
               onClick={() => setCropMode(!cropMode)}
             >
               <Crop size={16} />
@@ -614,7 +768,7 @@ function ReadingRoom({
               </button>
             </div>
           </div>
-          <div className="pdf-stage">
+          <div className="pdf-stage" ref={pdfStage}>
             <PdfView
               id={book.id}
               cropMode={cropMode}
@@ -635,10 +789,75 @@ function ReadingRoom({
               }}
               onNavigate={(next) => {
                 change(next);
+                setShowTranslation(false);
                 setSelection("");
                 window.getSelection()?.removeAllRanges();
               }}
             />
+            {pageTranslating && (
+              <div className="translation-progress" role="status">
+                <span className="sr-only">{state.page}쪽 번역 중</span>
+              </div>
+            )}
+            {translationError?.page === state.page && (
+              <div className="translation-notice" role="alert">
+                {translationError.message}
+                <button onClick={() => translate(state.page)}>재시도</button>
+                <button
+                  aria-label="번역 안내 닫기"
+                  onClick={() => setTranslationError(null)}
+                >
+                  <X size={14} />
+                </button>
+              </div>
+            )}
+            {showTranslation && translation.data && (
+              <div className="translation-view">
+                <article
+                  className="translation-paper"
+                  aria-label={`${state.page}쪽 번역`}
+                  style={
+                    paperWidth
+                      ? ({
+                          "--paper-width": `${paperWidth}px`,
+                        } as CSSProperties)
+                      : undefined
+                  }
+                >
+                  <header className="translation-meta">
+                    <span>
+                      <Languages size={14} />
+                      {state.page}쪽 번역 · {translation.data.model}
+                    </span>
+                    <button
+                      disabled={pageTranslating}
+                      onClick={() => translate(state.page)}
+                    >
+                      {pageTranslating ? (
+                        <LoaderCircle size={13} className="spin" />
+                      ) : (
+                        <RotateCcw size={13} />
+                      )}
+                      {pageTranslating ? "다시 번역 중…" : "다시 번역"}
+                    </button>
+                  </header>
+                  {translation.data.truncated && (
+                    <p className="translation-warning">
+                      페이지 본문이 길어 앞부분만 번역되었습니다.
+                    </p>
+                  )}
+                  <div className="markdown translation-body">
+                    <MarkdownContent figure={translationFigure}>
+                      {translation.data.content}
+                    </MarkdownContent>
+                  </div>
+                  <footer>
+                    AI 번역은 원문과 다를 수 있습니다. T 키로 원문과 번역을
+                    전환합니다.
+                  </footer>
+                </article>
+              </div>
+            )}
             <button
               className="page-side previous"
               aria-label="PDF 왼쪽 이전 페이지"
@@ -751,13 +970,7 @@ function ReadingRoom({
                     setModelResult(null);
                   }}
                 >
-                  <option value="openai">OpenAI</option>
-                  <option value="claude">Claude (Anthropic)</option>
-                  <option value="gemini">Gemini (Google)</option>
-                  <option value="openrouter">OpenRouter</option>
-                  {settings.provider === "fake" && (
-                    <option value="fake">테스트 모드</option>
-                  )}
+                  <ProviderOptions fake={settings.provider === "fake"} />
                 </select>
               </label>
               <label>
@@ -783,7 +996,7 @@ function ReadingRoom({
                     testingModel ||
                     savingPreferences
                   }
-                  onClick={testModel}
+                  onClick={() => testModel(modelDraft, setModelResult)}
                 >
                   {testingModel ? "테스트 중…" : "연결 테스트"}
                 </button>
@@ -824,6 +1037,100 @@ function ReadingRoom({
                   {modelResult.message}
                 </div>
               )}
+              <div className="translation-settings">
+                <strong>번역 모델</strong>
+                <p>
+                  현재:{" "}
+                  {settings.translation_provider
+                    ? `${settings.translation_provider} · ${settings.translation_model}`
+                    : `설명 모델과 같음 (${settings.provider} · ${settings.model || "모델 미설정"})`}
+                </p>
+                <label>
+                  번역 제공업체
+                  <select
+                    aria-label="번역 제공업체"
+                    value={translationDraft.provider}
+                    disabled={savingPreferences || testingModel}
+                    onChange={(event) => {
+                      setTranslationDraft({
+                        provider: event.target.value as Provider | "",
+                        model: "",
+                      });
+                      setTranslationResult(null);
+                    }}
+                  >
+                    <option value="">설명 모델과 같음</option>
+                    <ProviderOptions fake={settings.provider === "fake"} />
+                  </select>
+                </label>
+                {translationDraft.provider && (
+                  <label>
+                    번역 모델
+                    <input
+                      aria-label="번역 모델"
+                      value={translationDraft.model}
+                      maxLength={200}
+                      placeholder="모델 ID를 입력하세요"
+                      disabled={savingPreferences || testingModel}
+                      onChange={(event) => {
+                        setTranslationDraft({
+                          ...translationDraft,
+                          model: event.target.value,
+                        });
+                        setTranslationResult(null);
+                      }}
+                    />
+                  </label>
+                )}
+                <div className="model-actions">
+                  {translationDraft.provider && (
+                    <button
+                      disabled={
+                        !translationDraft.model.trim() ||
+                        translationDraft.provider === "fake" ||
+                        testingModel ||
+                        savingPreferences
+                      }
+                      onClick={() =>
+                        testModel(translationDraft, setTranslationResult)
+                      }
+                    >
+                      {testingModel ? "테스트 중…" : "연결 테스트"}
+                    </button>
+                  )}
+                  <button
+                    disabled={
+                      (translationDraft.provider !== "" &&
+                        !translationDraft.model.trim()) ||
+                      savingPreferences ||
+                      testingModel
+                    }
+                    onClick={async () => {
+                      if (
+                        await savePreferences({
+                          ...preferences,
+                          translation_provider: translationDraft.provider,
+                          translation_model: translationDraft.model.trim(),
+                        })
+                      )
+                        setTranslationResult({
+                          ok: true,
+                          message: "번역 모델을 저장했습니다.",
+                        });
+                    }}
+                  >
+                    번역 설정 저장
+                  </button>
+                </div>
+                {translationResult && (
+                  <div
+                    className={translationResult.ok ? "model-success" : "error"}
+                    role="status"
+                  >
+                    {translationResult.message}
+                  </div>
+                )}
+              </div>
               <label>
                 응답 스타일
                 <select

@@ -976,3 +976,250 @@ def test_crop_matches_display_coordinates_with_rotation(tmp_path, rotation):
         crop={"x": 0.1, "y": 0.1, "width": 0.1, "height": 0.1}))
     actual = pymupdf.Pixmap(str(image))
     assert all(abs(a - b) < 5 for a, b in zip(actual.pixel(actual.width // 2, actual.height // 2), expected))
+
+
+class TranslationAdapter:
+    def __init__(self):
+        self.contexts = []
+
+    async def stream(self, context):
+        self.contexts.append(context)
+        await asyncio.sleep(0.05)
+        yield {"type": "delta", "text": "## 번역된 페이지\n\n벡터는 크기와 방향을 가진다."}
+        yield {"type": "done", "usage": {}}
+
+
+def test_page_translation_cache_context_and_cascade(settings):
+    import httpx
+
+    from app.backup import current_fingerprint
+    from app.llm import TRANSLATION_INSTRUCTIONS
+    from app.models import PageTranslation
+
+    adapter = TranslationAdapter()
+    with TestClient(create_app(settings, adapter=adapter)) as client:
+        book = upload(client)
+        url = f"/api/books/{book['id']}/pages/2/translation"
+        assert client.get(url).json() is None
+        assert client.post(f"/api/books/{book['id']}/pages/4/translation").status_code == 422
+        assert client.get(f"/api/books/{book['id']}/pages/0/translation").status_code == 422
+        engine = client.app.state.Session.kw["bind"]
+        before = current_fingerprint(engine)
+
+        async def concurrent():
+            transport = httpx.ASGITransport(app=client.app)
+            async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as http:
+                return await asyncio.gather(http.post(url), http.post(url))
+
+        responses = asyncio.run(concurrent())
+        assert [response.status_code for response in responses] == [200, 200]
+        assert len(adapter.contexts) == 1
+        translation = responses[0].json()
+        assert translation == responses[1].json()
+        assert translation["content"].startswith("## 번역된 페이지")
+        assert translation["page"] == 2 and not translation["truncated"]
+        context = adapter.contexts[0]
+        assert context.instructions == TRANSLATION_INSTRUCTIONS
+        assert context.max_output_tokens == settings.translation_max_output_tokens
+        assert context.history == []
+        # Translation attaches the page image even though chat image mode is "auto".
+        assert context.image_url.startswith("data:image/jpeg;base64,")
+        assert "Learning page 2" in context.prompt
+        assert "<figures>" not in context.prompt and translation["figures"] == []
+        assert current_fingerprint(engine) != before
+    with TestClient(create_app(settings)) as client:
+        assert client.get(url).json() == translation
+        retranslated = client.post(url).json()
+        assert retranslated["content"].startswith("**테스트 번역**")
+        assert client.get(url).json() == retranslated
+        assert client.delete(f"/api/books/{book['id']}").status_code == 204
+        with client.app.state.Session() as session:
+            assert session.scalar(select(func.count()).select_from(PageTranslation)) == 0
+
+
+def test_page_translation_failures_are_safe_and_not_cached(settings):
+    with TestClient(create_app(settings, adapter=FailingAdapter())) as client:
+        book = upload(client)
+        url = f"/api/books/{book['id']}/pages/1/translation"
+        response = client.post(url)
+        assert response.status_code == 502
+        assert "secret-provider-error" not in response.text
+        assert client.get(url).json() is None
+    with TestClient(create_app(settings)) as client:
+        scan = upload(client, pdf=make_pdf(1, scan=True))
+        url = f"/api/books/{scan['id']}/pages/1/translation"
+        client.put("/api/settings", json={"image_mode": "never"})
+        assert "페이지 이미지도 첨부" in client.post(url).json()["content"]
+    without_images = settings.model_copy(update={"llm_supports_images": False})
+    with TestClient(create_app(without_images)) as client:
+        text_book = upload(client)
+        text_url = f"/api/books/{text_book['id']}/pages/1/translation"
+        assert "페이지 이미지도 첨부" not in client.post(text_url).json()["content"]
+        response = client.post(url)
+        assert response.status_code == 422
+        assert response.json()["detail"]["code"] == "images_unsupported"
+
+
+def test_translation_model_defaults_to_chat_model_and_can_be_separate(settings):
+    adapter = TranslationAdapter()
+    with TestClient(create_app(settings, adapter=adapter)) as client:
+        book = upload(client)
+        url = f"/api/books/{book['id']}/pages/1/translation"
+        prefs = client.get("/api/settings").json()
+        assert prefs["translation_provider"] == "" and prefs["translation_model"] == ""
+        assert prefs["translation_configured"]
+        client.put("/api/settings", json={"provider": "fake", "model": "chat-model"})
+        assert client.post(url).json()["model"] == "chat-model"
+
+        response = client.put(
+            "/api/settings",
+            json={"translation_provider": "fake", "translation_model": "  translate-model "},
+        )
+        assert response.status_code == 200
+        assert response.json()["translation_model"] == "translate-model"
+        assert response.json()["model"] == "chat-model"
+        assert client.post(url).json()["model"] == "translate-model"
+        assert adapter.contexts[-1].model == "translate-model"
+        # Chat-only saves leave the translation choice untouched.
+        client.put("/api/settings", json={"response_style": "concise"})
+        assert client.get("/api/settings").json()["translation_model"] == "translate-model"
+
+        for invalid in (
+            {"translation_provider": "fake", "translation_model": ""},
+            {"translation_provider": "fake"},
+            {"translation_provider": "fake", "translation_model": "a\nb"},
+            {"translation_provider": "unknown", "translation_model": "x"},
+        ):
+            assert client.put("/api/settings", json=invalid).status_code == 422
+
+        reset = client.put(
+            "/api/settings", json={"translation_provider": "", "translation_model": "ignored"}
+        ).json()
+        assert reset["translation_provider"] == "" and reset["translation_model"] == ""
+        assert client.post(url).json()["model"] == "chat-model"
+    # An inherited process key must not make the unconfigured provider look ready.
+    without_key = settings.model_copy(update={"openai_api_key": ""})
+    with TestClient(create_app(without_key)) as client:
+        response = client.put(
+            "/api/settings", json={"translation_provider": "openai", "translation_model": "m"}
+        )
+        assert response.json()["translation_configured"] is False
+        book = client.get("/api/books").json()["items"][0]
+        response = client.post(f"/api/books/{book['id']}/pages/1/translation")
+        assert response.status_code == 503
+
+
+def test_settings_update_rejects_server_only_translation_provider(tmp_path):
+    settings = Settings(
+        _env_file=None,
+        data_dir=tmp_path,
+        database_url=f"sqlite:///{tmp_path}/learning.db",
+        llm_provider="openai",
+    )
+    with TestClient(create_app(settings)) as client:
+        response = client.put(
+            "/api/settings", json={"translation_provider": "fake", "translation_model": "x"}
+        )
+        assert response.status_code == 422
+
+
+def make_figure_pdf():
+    with pymupdf.open() as document:
+        page = document.new_page()
+        page.insert_text((60, 80), "A bar chart follows. Figure 1.1 shows returns.")
+        page.draw_line((60, 100), (540, 100))
+        for index in range(5):
+            page.draw_rect(
+                pymupdf.Rect(100 + index * 60, 300, 140 + index * 60, 420 - index * 15),
+                fill=(0, 0, 1),
+            )
+        pixmap = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 40, 40), False)
+        pixmap.clear_with(90)
+        page.insert_image(pymupdf.Rect(150, 500, 450, 700), pixmap=pixmap)
+        page.insert_text((60, 740), "Figure 1.2 An embedded photograph.")
+        return document.tobytes()
+
+
+def test_translation_crops_figures_and_serves_them(settings):
+    adapter = TranslationAdapter()
+    with TestClient(create_app(settings, adapter=adapter)) as client:
+        book = upload(client, pdf=make_figure_pdf())
+        url = f"/api/books/{book['id']}/pages/1/translation"
+        translation = client.post(url).json()
+        figures = translation["figures"]
+        assert len(figures) == 2
+        chart, photo = figures
+        assert chart["y"] < photo["y"]
+        assert abs(chart["x"] - 100 / 595) < 0.02 and abs(photo["y"] - 500 / 842) < 0.02
+        prompt = adapter.contexts[-1].prompt
+        assert "<figures>" in prompt and "그림 2:" in prompt and "그림 3:" not in prompt
+        assert client.get(url).json()["figures"] == figures
+
+        response = client.get(f"{url}/figures/2")
+        assert response.status_code == 200
+        assert response.headers["content-type"] == "image/jpeg"
+        image = pymupdf.Pixmap(response.content)
+        assert image.width > image.height
+        center = image.pixel(image.width // 2, image.height // 2)
+        assert all(abs(channel - 90) < 10 for channel in center)
+        for missing in (0, 3):
+            assert client.get(f"{url}/figures/{missing}").status_code == 404
+        plain = upload(client)
+        assert client.get(f"/api/books/{plain['id']}/pages/1/translation/figures/1").status_code == 404
+    with TestClient(create_app(settings)) as client:
+        assert "![그림 1](figure:1)" in client.post(url).json()["content"]
+
+
+class BrokenMathAdapter:
+    """First reply drops a closing $; later replies are the repair pass."""
+
+    def __init__(self, repairs):
+        self.repairs = list(repairs)
+        self.contexts = []
+
+    async def stream(self, context):
+        from app.llm import MATH_REPAIR_INSTRUCTIONS
+
+        self.contexts.append(context)
+        if context.instructions == MATH_REPAIR_INSTRUCTIONS:
+            text = self.repairs.pop(0)
+        else:
+            text = (
+                "## 2.8 변수 변환\n\n"
+                "아핀 변환 $f(\\mathbf{x})=\\mathbf{A}\\mathbf{x}+\\mathbf{b)의 예. "
+                "여기서는 $\\mathbf{A}=\\mathbf{I}$이다.\n\n"
+                "정상 문단 $a+b$."
+            )
+        yield {"type": "delta", "text": text}
+        yield {"type": "done", "usage": {}}
+
+
+def test_translation_repairs_broken_math_paragraphs(settings):
+    fixed = (
+        "아핀 변환 $f(\\mathbf{x})=\\mathbf{A}\\mathbf{x}+\\mathbf{b}$의 예. "
+        "여기서는 $\\mathbf{A}=\\mathbf{I}$이다."
+    )
+    adapter = BrokenMathAdapter([f'<p id="1">\n{fixed}\n</p>'])
+    with TestClient(create_app(settings, adapter=adapter)) as client:
+        book = upload(client)
+        content = client.post(f"/api/books/{book['id']}/pages/1/translation").json()["content"]
+        assert content == f"## 2.8 변수 변환\n\n{fixed}\n\n정상 문단 $a+b$."
+        repair = adapter.contexts[1]
+        assert '<p id="1">' in repair.prompt and '<p id="0">' not in repair.prompt
+        assert "$ 짝이 맞지 않음" in repair.prompt
+        assert repair.image_url and repair.history == []
+
+
+def test_translation_keeps_original_when_repair_is_still_broken(settings):
+    still_broken = '<p id="1">\n여전히 $x 깨짐\n</p>'
+    adapter = BrokenMathAdapter([still_broken])
+    with TestClient(create_app(settings, adapter=adapter)) as client:
+        book = upload(client)
+        content = client.post(f"/api/books/{book['id']}/pages/1/translation").json()["content"]
+        assert "\\mathbf{b)의 예" in content and "깨짐" not in content
+        assert len(adapter.contexts) == 2
+    # Valid translations never trigger a repair request.
+    clean = TranslationAdapter()
+    with TestClient(create_app(settings, adapter=clean)) as client:
+        client.post(f"/api/books/{book['id']}/pages/1/translation")
+        assert len(clean.contexts) == 1
