@@ -203,14 +203,6 @@ button.primary:hover:not(:disabled) {
   letter-spacing: 1.6px;
   color: #95988d;
 }
-.local-badge {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  font-size: 11px;
-  color: #777e71;
-}
-.local-badge i,
 .reader-save i {
   width: 6px;
   height: 6px;
@@ -257,9 +249,163 @@ button.primary:hover:not(:disabled) {
   margin-left: 8px;
   font-weight: 400;
 }
-.section-heading > span {
+.section-tools {
+  display: flex;
+  align-items: center;
+  gap: 16px;
   font-size: 11px;
   color: #979b91;
+}
+.view-toggle {
+  display: flex;
+  padding: 2px;
+  gap: 2px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fffefb;
+}
+.view-toggle button {
+  display: flex;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #8a9380;
+}
+.view-toggle button[aria-pressed="true"] {
+  background: #e7ecdf;
+  color: var(--green);
+}
+.book-grid.compact {
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 24px 16px;
+}
+.compact .book-cover {
+  height: 170px;
+  padding: 14px;
+}
+.compact .cover-top,
+.compact .book-cover > svg,
+.compact .cover-bottom svg {
+  display: none;
+}
+.compact .book-cover h3 {
+  font-size: 15px;
+  margin-top: 0;
+  max-height: 84px;
+  letter-spacing: -0.3px;
+}
+.compact .cover-bottom {
+  font-size: 9px;
+  padding-top: 8px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  display: block;
+}
+.compact .add-card {
+  min-height: 170px;
+}
+.compact .add-card small {
+  display: none;
+}
+.compact .book-details > a {
+  font-size: 12px;
+}
+.book-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fffefb;
+}
+.book-row {
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr) 220px 90px 28px;
+  align-items: center;
+  gap: 18px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--line);
+}
+.book-row:hover {
+  background: #f7f7f1;
+}
+.row-cover {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 46px;
+  border-radius: 4px;
+  border: 1px solid #c9cebb;
+  background: #dce2cd;
+  color: #364b3e;
+}
+.row-cover.cover-1 {
+  border-color: #dbd0c1;
+}
+.row-cover.cover-2 {
+  border-color: #c9d5d8;
+}
+.row-cover.cover-3 {
+  border-color: #d4cbd0;
+}
+.row-title {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.row-title strong {
+  font-size: 14px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.row-title small,
+.row-date,
+.row-progress span {
+  font-size: 11px;
+  color: #93978b;
+}
+.row-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.row-progress progress {
+  width: 100%;
+}
+.row-date {
+  text-align: right;
+}
+.row-add {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  padding: 14px;
+  border: 0;
+  background: transparent;
+  color: #8a9380;
+  font-size: 12px;
+}
+.row-add:hover {
+  background: #f7f7f1;
+}
+@media (max-width: 700px) {
+  .book-row {
+    grid-template-columns: 36px minmax(0, 1fr) 28px;
+    gap: 12px;
+  }
+  .row-progress {
+    grid-column: 2;
+  }
+  .row-date {
+    display: none;
+  }
 }
 .book-grid {
   display: grid;
@@ -1157,9 +1303,6 @@ button.primary:hover:not(:disabled) {
   }
   .brand {
     font-size: 19px;
-  }
-  .local-badge {
-    font-size: 9px;
   }
   .library-main {
     padding: 35px 20px;
