@@ -4,6 +4,9 @@ import { Link } from "react-router-dom";
 import {
   ArrowUpRight,
   BookOpen,
+  Grid2x2,
+  LayoutGrid,
+  List,
   Plus,
   Settings2,
   Trash2,
@@ -12,6 +15,25 @@ import {
 } from "lucide-react";
 import { api, type Book, type Page } from "./api";
 import { BackupSettings } from "./BackupSettings";
+
+type ViewMode = "large" | "compact" | "list";
+const VIEW_KEY = "library-view";
+const VIEW_OPTIONS: { mode: ViewMode; label: string; icon: typeof List }[] = [
+  { mode: "large", label: "큰 카드", icon: LayoutGrid },
+  { mode: "compact", label: "작은 카드", icon: Grid2x2 },
+  { mode: "list", label: "목록", icon: List },
+];
+
+function loadView(): ViewMode {
+  try {
+    const saved = localStorage.getItem(VIEW_KEY);
+    if (saved === "large" || saved === "compact" || saved === "list")
+      return saved;
+  } catch {
+    /* storage unavailable */
+  }
+  return "large";
+}
 
 export function Library() {
   const client = useQueryClient();
@@ -22,6 +44,7 @@ export function Library() {
       api<Page<Book>>(`/books${pageParam ? `?before=${pageParam}` : ""}`),
     getNextPageParam: (page) => page.next_cursor ?? undefined,
   });
+  const [view, setView] = useState<ViewMode>(loadView);
   const [adding, setAdding] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [title, setTitle] = useState("");
@@ -31,6 +54,20 @@ export function Library() {
   const [error, setError] = useState("");
   const [deleting, setDeleting] = useState<Book | null>(null);
   const items = books.data?.pages.flatMap((page) => page.items) ?? [];
+
+  function changeView(mode: ViewMode) {
+    setView(mode);
+    try {
+      localStorage.setItem(VIEW_KEY, mode);
+    } catch {
+      /* storage unavailable */
+    }
+  }
+
+  function openAdd() {
+    setError("");
+    setAdding(true);
+  }
 
   async function upload(event: FormEvent) {
     event.preventDefault();
@@ -80,9 +117,6 @@ export function Library() {
           Textbook Studio
           <span className="brand-caption">PERSONAL LEARNING SPACE</span>
         </Link>
-        <span className="local-badge">
-          <i /> 개인 라이브러리
-        </span>
         <button onClick={() => setShowSettings(true)} aria-label="설정 · 백업">
           <Settings2 size={18} /> 설정
         </button>
@@ -108,7 +142,23 @@ export function Library() {
           <h2>
             내 서재 <span>{items.length}</span>
           </h2>
-          <span>최근 읽은 순</span>
+          <div className="section-tools">
+            <span>최근 읽은 순</span>
+            <div className="view-toggle" role="group" aria-label="보기 방식">
+              {VIEW_OPTIONS.map(({ mode, label, icon: Icon }) => (
+                <button
+                  key={mode}
+                  type="button"
+                  aria-pressed={view === mode}
+                  aria-label={label}
+                  title={label}
+                  onClick={() => changeView(mode)}
+                >
+                  <Icon size={15} />
+                </button>
+              ))}
+            </div>
+          </div>
         </div>
         {error && !adding && !deleting && (
           <p role="alert" className="error">
@@ -122,8 +172,51 @@ export function Library() {
             <p role="alert">{books.error.message}</p>
             <button onClick={() => books.refetch()}>다시 시도</button>
           </div>
+        ) : view === "list" ? (
+          <ul className="book-list">
+            {items.map((book, index) => (
+              <li className="book-row" key={book.id}>
+                <Link
+                  to={`/books/${book.id}`}
+                  className={`row-cover cover-${index % 4}`}
+                  aria-hidden="true"
+                  tabIndex={-1}
+                >
+                  <BookOpen size={18} strokeWidth={1.4} />
+                </Link>
+                <Link className="row-title" to={`/books/${book.id}`}>
+                  <strong>{book.title}</strong>
+                  <small>{book.author || "나의 학습 프로젝트"}</small>
+                </Link>
+                <div className="row-progress">
+                  <progress value={book.current_page} max={book.page_count} />
+                  <span>
+                    {book.current_page} / {book.page_count}쪽 · {book.progress}%
+                  </span>
+                </div>
+                <span className="row-date">
+                  {new Date(book.last_opened_at).toLocaleDateString("ko-KR")}
+                </span>
+                <button
+                  className="icon-button"
+                  aria-label={`${book.title} 삭제`}
+                  onClick={() => {
+                    setError("");
+                    setDeleting(book);
+                  }}
+                >
+                  <Trash2 size={15} />
+                </button>
+              </li>
+            ))}
+            <li>
+              <button className="row-add" onClick={openAdd}>
+                <Plus size={16} /> 새 책 추가
+              </button>
+            </li>
+          </ul>
         ) : (
-          <div className="book-grid">
+          <div className={`book-grid ${view === "compact" ? "compact" : ""}`}>
             {items.map((book, index) => (
               <article className="book-card" key={book.id}>
                 <Link
@@ -167,13 +260,7 @@ export function Library() {
                 </div>
               </article>
             ))}
-            <button
-              className="add-card"
-              onClick={() => {
-                setError("");
-                setAdding(true);
-              }}
-            >
+            <button className="add-card" onClick={openAdd}>
               <span>
                 <Plus size={24} />
               </span>
