@@ -3,6 +3,7 @@ import base64
 import hashlib
 import json
 import logging
+import re
 import shutil
 import sqlite3
 import time
@@ -30,13 +31,21 @@ from app.backup import (
 )
 from app.config import ROOT, Settings
 from app.db import make_engine, migrate, sessions
-from app.llm import INSTRUCTIONS, ChatContext, make_adapter
+from app.llm import (
+    INSTRUCTIONS,
+    MATH_REPAIR_INSTRUCTIONS,
+    TRANSLATION_INSTRUCTIONS,
+    ChatContext,
+    make_adapter,
+)
+from app.mathcheck import broken_paragraphs, paragraphs
 from app.models import (
     Annotation,
     AppSettings,
     Book,
     ChatRequest,
     Message,
+    PageTranslation,
     ReadingState,
     Thread,
     now,
@@ -48,9 +57,9 @@ from app.schemas import (
     BackupPreferences,
     BookUpdate,
     ModelSelection,
-    Preferences,
     Question,
     ReaderState,
+    SettingsUpdate,
 )
 
 logger = logging.getLogger("studio")
@@ -215,6 +224,14 @@ def create_app(settings: Settings | None = None, adapter=None):
             session.execute(text("SELECT 1"))
         return {"status": "ok", "database": "ready"}
 
+    def translation_model(prefs):
+        if prefs.translation_provider:
+            return prefs.translation_provider, prefs.translation_model
+        return prefs.provider or settings.llm_provider, prefs.model or settings.llm_model
+
+    def configured(provider, model):
+        return provider == "fake" or bool(settings.api_key_for(provider) and model)
+
     @app.get("/api/settings")
     def read_settings():
         with Session() as session:
@@ -224,9 +241,11 @@ def create_app(settings: Settings | None = None, adapter=None):
             return {
                 "provider": provider,
                 "model": model,
+                "translation_provider": prefs.translation_provider,
+                "translation_model": prefs.translation_model,
+                "translation_configured": configured(*translation_model(prefs)),
                 "available_models": settings.available_models,
-                "llm_configured": provider == "fake"
-                or bool(settings.api_key_for(provider) and model),
+                "llm_configured": configured(provider, model),
                 "supports_images": settings.llm_supports_images,
                 "response_style": prefs.response_style,
                 "image_mode": prefs.image_mode,
@@ -343,7 +362,7 @@ def create_app(settings: Settings | None = None, adapter=None):
         return run_backup()
 
     @app.put("/api/settings")
-    def save_settings(body: Preferences):
+    def save_settings(body: SettingsUpdate):
         with Session.begin() as session:
             prefs = session.get(AppSettings, 1)
             prefs.response_style, prefs.image_mode = body.response_style, body.image_mode
@@ -353,6 +372,15 @@ def create_app(settings: Settings | None = None, adapter=None):
                 prefs.provider = body.provider
             if body.model is not None:
                 prefs.model = body.model
+            if body.translation_provider is not None:
+                if body.translation_provider == "fake" and settings.llm_provider != "fake":
+                    fail(422, "invalid_provider", "테스트 모드는 서버에서만 활성화할 수 있습니다.")
+                if body.translation_provider and not body.translation_model:
+                    fail(422, "translation_model_required", "번역 모델 ID를 입력해 주세요.")
+                prefs.translation_provider = body.translation_provider
+                prefs.translation_model = (
+                    body.translation_model if body.translation_provider else ""
+                )
         return read_settings()
 
     @app.post("/api/settings/test")
@@ -606,6 +634,211 @@ def create_app(settings: Settings | None = None, adapter=None):
         with Session.begin() as session:
             session.delete(get_annotation(session, book_id, annotation_id))
 
+    def translation_record(row):
+        return {
+            "page": row.page,
+            "content": row.content,
+            "provider": row.provider,
+            "model": row.model,
+            "truncated": row.truncated,
+            "figures": row.figures,
+            "created_at": row.created_at,
+        }
+
+    def translation_page(session, book_id, page):
+        book = get_book(session, book_id)
+        if not 1 <= page <= book.page_count:
+            fail(422, "page_out_of_range", "책의 페이지 범위를 벗어났습니다.")
+        return book
+
+    @app.get("/api/books/{book_id}/pages/{page}/translation")
+    def read_translation(book_id: UUID, page: int):
+        with Session() as session:
+            book = translation_page(session, book_id, page)
+            row = session.get(PageTranslation, (book.id, page))
+            return translation_record(row) if row else None
+
+    async def translate_page(book_id, page, provider, model):
+        # The page image always accompanies translation when the model accepts images:
+        # extracted text scrambles formulas and figure placement.
+        page_text, _, image_url, _ = await page_material(
+            book_id, page, "always" if settings.llm_supports_images else "auto"
+        )
+        path = folder(book_id) / "original.pdf"
+        figures = (await pdf.run("figures", path, page))["figures"]
+        prefix = f"PDF 페이지: {page}\n"
+        if figures:
+            prefix += (
+                "<figures>\n"
+                + "".join(
+                    f"그림 {index}: 위에서 {f['y']:.0%}~{f['y'] + f['height']:.0%}, "
+                    f"왼쪽에서 {f['x']:.0%}~{f['x'] + f['width']:.0%}\n"
+                    for index, f in enumerate(figures, 1)
+                )
+                + "</figures>\n"
+            )
+        # Same conservative UTF-8 byte budget as chat context.
+        remaining = (
+            settings.llm_input_token_budget
+            - len((TRANSLATION_INSTRUCTIONS + prefix).encode())
+            - 256
+        )
+        clipped = page_text.encode()[: max(remaining, 0)].decode(errors="ignore")
+        context = ChatContext(
+            prefix + f"<page_text>\n{clipped}\n</page_text>",
+            [],
+            image_url,
+            "step_by_step",
+            model,
+            instructions=TRANSLATION_INSTRUCTIONS,
+            max_output_tokens=settings.translation_max_output_tokens,
+        )
+        llm = adapter or make_adapter(settings, provider)
+        content = await complete(llm, context)
+        if not content.strip():
+            raise RuntimeError("incomplete_stream")
+        content = await repair_math(llm, content.strip(), image_url, model)
+        with Session.begin() as session:
+            book = get_book(session, book_id)
+            row = session.get(PageTranslation, (book.id, page)) or PageTranslation(
+                book_id=book.id, page=page
+            )
+            row.content, row.provider, row.model = content.strip(), provider, model
+            row.truncated = len(clipped) < len(page_text)
+            row.figures = figures
+            row.created_at = now()
+            session.add(row)
+            return translation_record(row)
+
+    async def complete(llm, context):
+        content, finished = "", False
+        async with asyncio.timeout(settings.llm_timeout_seconds):
+            async with aclosing(llm.stream(context)) as stream:
+                async for event in stream:
+                    if event["type"] == "delta":
+                        content += event["text"]
+                    elif event["type"] == "done":
+                        finished = True
+        if not finished:
+            raise RuntimeError("incomplete_stream")
+        return content
+
+    async def repair_math(llm, content, image_url, model):
+        """One best-effort pass that fixes only paragraphs whose math cannot render."""
+        broken = broken_paragraphs(content)
+        if not broken:
+            return content
+        prompt = (
+            "".join(f'<p id="{index}">\n{paragraph}\n</p>\n' for index, paragraph, _ in broken)
+            + "\n발견된 문제:\n"
+            + "".join(f"- 문단 {index}: {', '.join(problems)}\n" for index, _, problems in broken)
+        )
+        try:
+            reply = await complete(
+                llm,
+                ChatContext(
+                    prompt,
+                    [],
+                    image_url,
+                    "step_by_step",
+                    model,
+                    instructions=MATH_REPAIR_INSTRUCTIONS,
+                    max_output_tokens=settings.translation_max_output_tokens,
+                ),
+            )
+        except Exception:
+            logger.warning("math repair failed; keeping the original translation", exc_info=True)
+            return content
+        fixed = {
+            int(index): paragraph.strip()
+            for index, paragraph in re.findall(r'<p id="(\d+)">\s*(.*?)\s*</p>', reply, re.S)
+        }
+        blocks = paragraphs(content)
+        for index, original, problems in broken:
+            candidate = fixed.get(index)
+            # Accept only replacements that actually resolve the detected problems.
+            if candidate and len(broken_paragraphs(candidate)) == 0:
+                blocks[index] = candidate
+        return "\n\n".join(blocks)
+
+    translations = {}
+    translation_failures = {
+        "images_unsupported": "현재 모델은 이미지 입력이 비활성화되어 있어 이 페이지를 번역할 수 없습니다.",
+        "image_required": "텍스트가 없는 페이지입니다. AI 설정에서 이미지 첨부를 허용해 주세요.",
+        "image_too_large": "페이지 이미지가 너무 커서 번역할 수 없습니다.",
+        "invalid_pdf": "PDF 페이지를 읽지 못했습니다.",
+    }
+
+    @app.post("/api/books/{book_id}/pages/{page}/translation")
+    async def translate(book_id: UUID, page: int):
+        with Session() as session:
+            translation_page(session, book_id, page)
+            prefs = session.get(AppSettings, 1)
+            provider, model = translation_model(prefs)
+        if provider == "fake" and settings.llm_provider != "fake":
+            fail(422, "invalid_provider", "테스트 모드는 서버에서만 활성화할 수 있습니다.")
+        if provider != "fake" and not (settings.api_key_for(provider) and model):
+            fail(
+                503,
+                "llm_not_configured",
+                "번역 모델의 서버 API 키와 모델명을 AI 설정에서 확인해 주세요.",
+            )
+        key = (str(book_id), page)
+        task = translations.get(key)
+        if task is None:
+            # Translation outlives the request so leaving the page still fills the cache.
+            task = asyncio.create_task(translate_page(book_id, page, provider, model))
+            translations[key] = task
+
+            def finished(done):
+                if translations.get(key) is done:
+                    del translations[key]
+                if not done.cancelled():
+                    done.exception()
+
+            task.add_done_callback(finished)
+        try:
+            return await asyncio.shield(task)
+        except HTTPException:
+            raise
+        except TimeoutError:
+            fail(504, "timeout", "번역 제한 시간을 초과했습니다. 다시 시도해 주세요.")
+        except AuthenticationError:
+            fail(
+                422,
+                "provider_authentication",
+                "API 키 인증에 실패했습니다. 서버 설정을 확인해 주세요.",
+            )
+        except RateLimitError:
+            fail(
+                429,
+                "provider_rate_limit",
+                "API 사용 한도에 도달했습니다. 잠시 후 다시 시도해 주세요.",
+            )
+        except ValueError as error:
+            if str(error) in translation_failures:
+                fail(422, str(error), translation_failures[str(error)])
+            fail(502, "provider_failed", "번역에 실패했습니다. 잠시 후 다시 시도해 주세요.")
+        except Exception:
+            logger.warning("translation book=%s page=%s failed", book_id, page, exc_info=True)
+            fail(502, "provider_failed", "번역에 실패했습니다. 잠시 후 다시 시도해 주세요.")
+
+    @app.get("/api/books/{book_id}/pages/{page}/translation/figures/{index}")
+    async def translation_figure(book_id: UUID, page: int, index: int):
+        with Session() as session:
+            book = translation_page(session, book_id, page)
+            row = session.get(PageTranslation, (book.id, page))
+            if row is None or not 1 <= index <= len(row.figures):
+                fail(404, "figure_not_found", "번역 그림을 찾을 수 없습니다.")
+            crop = row.figures[index - 1]
+        try:
+            image_path, _ = await render_page_image(book_id, page, crop)
+        except (ValueError, TimeoutError):
+            fail(422, "invalid_pdf", "PDF 페이지를 읽지 못했습니다.")
+        return FileResponse(
+            image_path, media_type="image/jpeg", headers={"Cache-Control": "private"}
+        )
+
     @app.get("/api/books/{book_id}/messages")
     def history(book_id: UUID, limit: int = Query(50, ge=1, le=100), before: str | None = None):
         with Session() as session:
@@ -638,6 +871,42 @@ def create_app(settings: Settings | None = None, adapter=None):
                 "next_cursor": messages[limit - 1].id if len(messages) > limit else None,
             }
 
+    async def render_page_image(book_id, page, crop=None):
+        suffix = hashlib.sha256(json.dumps(crop, sort_keys=True).encode()).hexdigest()[:20]
+        cache_key = f"page-{page}-crop-{suffix}-v1.jpg" if crop else f"page-{page}-2048-v1.jpg"
+        result = await pdf.run(
+            "page",
+            folder(book_id) / "original.pdf",
+            page,
+            str(folder(book_id) / "images" / cache_key),
+            crop=crop,
+        )
+        return Path(result["image_path"]), cache_key
+
+    async def page_material(book_id, page, image_mode, crop=None):
+        path = folder(book_id) / "original.pdf"
+        result = await pdf.run("page", path, page)
+        page_text = result["text"]
+        image = (
+            crop is not None
+            or image_mode == "always"
+            or (image_mode == "auto" and len(page_text.strip()) < 50)
+        )
+        if image and not settings.llm_supports_images:
+            raise ValueError("images_unsupported")
+        if not page_text.strip() and not image:
+            raise ValueError("image_required")
+        image_url, cache_key = None, None
+        if image:
+            image_path, cache_key = await render_page_image(
+                book_id, page, crop.model_dump() if crop else None
+            )
+            image_bytes = image_path.read_bytes()
+            if len(image_bytes) > 5 * 1024 * 1024:
+                raise ValueError("image_too_large")
+            image_url = "data:image/jpeg;base64," + base64.b64encode(image_bytes).decode()
+        return page_text, image, image_url, cache_key
+
     async def build_context(book_id, body):
         with Session() as session:
             book = get_book(session, book_id)
@@ -656,32 +925,9 @@ def create_app(settings: Settings | None = None, adapter=None):
                     .limit(12)
                 )
             )
-        path = folder(book_id) / "original.pdf"
-        result = await pdf.run("page", path, body.page)
-        page_text = result["text"]
-        image = body.crop is not None or body.image_mode == "always" or (
-            body.image_mode == "auto" and len(page_text.strip()) < 50
+        page_text, image, image_url, cache_key = await page_material(
+            book_id, body.page, body.image_mode, body.crop
         )
-        if image and not settings.llm_supports_images:
-            raise ValueError("images_unsupported")
-        if not page_text.strip() and not image:
-            raise ValueError("image_required")
-        image_url, cache_key = None, None
-        if image:
-            crop = body.crop.model_dump() if body.crop else None
-            suffix = hashlib.sha256(json.dumps(crop, sort_keys=True).encode()).hexdigest()[:20]
-            cache_key = (
-                f"page-{body.page}-crop-{suffix}-v1.jpg"
-                if crop
-                else f"page-{body.page}-2048-v1.jpg"
-            )
-            result = await pdf.run(
-                "page", path, body.page, str(folder(book_id) / "images" / cache_key), crop=crop
-            )
-            image_bytes = Path(result["image_path"]).read_bytes()
-            if len(image_bytes) > 5 * 1024 * 1024:
-                raise ValueError("image_too_large")
-            image_url = "data:image/jpeg;base64," + base64.b64encode(image_bytes).decode()
         prefix = (
             f"책: {title}\nPDF 페이지: {body.page}\n질문: {body.question}\n"
             f"<selected_text>\n{body.selected_text}\n</selected_text>\n"
@@ -689,7 +935,8 @@ def create_app(settings: Settings | None = None, adapter=None):
                 "첨부 이미지는 사용자가 선택한 현재 페이지의 일부 영역이다. "
                 "이 영역을 중심으로 답변하고, 수식·행렬은 읽은 내용을 먼저 표시한다. "
                 "불분명한 기호나 원소를 추측하지 말고 확인을 요청한다.\n"
-                if body.crop else ""
+                if body.crop
+                else ""
             )
         )
         # UTF-8 bytes are a conservative token upper bound, not a tokenizer estimate.

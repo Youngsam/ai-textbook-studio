@@ -12,7 +12,12 @@ export function normalizeMath(source: string): string {
               /\\\[([\s\S]*?)\\\]/g,
               (_, value: string) => `\n\n$$\n${value.trim()}\n$$\n\n`,
             )
-            .replace(/\\\(([^\n]*?)\\\)/g, (_, value: string) => `$${value}$`),
+            .replace(/\\\(([^\n]*?)\\\)/g, (_, value: string) => `$${value}$`)
+            // A line that is only $$...$$ is display math; inline mode rejects \tag.
+            .replace(
+              /^[ \t]*\$\$([^\n$]+?)\$\$[ \t]*$/gm,
+              (_, value: string) => `\n$$\n${value.trim()}\n$$\n`,
+            ),
     )
     .join("");
 }

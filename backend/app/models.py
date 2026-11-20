@@ -108,6 +108,8 @@ class AppSettings(Base):
     image_mode: Mapped[str] = mapped_column(default="auto")
     model: Mapped[str] = mapped_column(default="")
     provider: Mapped[str] = mapped_column(default="")
+    translation_provider: Mapped[str] = mapped_column(default="")
+    translation_model: Mapped[str] = mapped_column(default="")
     backup_path: Mapped[str] = mapped_column(default="")
     backup_auto: Mapped[bool] = mapped_column(default=True)
     backup_state: Mapped[dict] = mapped_column(JSON, default=dict)
@@ -129,3 +131,19 @@ class Annotation(Base):
     note: Mapped[str] = mapped_column(default="")
     created_at: Mapped[str] = mapped_column(default=now)
     updated_at: Mapped[str] = mapped_column(default=now)
+
+
+class PageTranslation(Base):
+    __tablename__ = "page_translations"
+    __table_args__ = (CheckConstraint("page >= 1"),)
+    book_id: Mapped[str] = mapped_column(
+        ForeignKey("books.id", ondelete="CASCADE"), primary_key=True
+    )
+    page: Mapped[int] = mapped_column(primary_key=True)
+    content: Mapped[str]
+    provider: Mapped[str]
+    model: Mapped[str]
+    truncated: Mapped[bool] = mapped_column(default=False)
+    # Normalized display-space rects; content references them as figure:N (1-based).
+    figures: Mapped[list] = mapped_column(JSON, default=list)
+    created_at: Mapped[str] = mapped_column(default=now)

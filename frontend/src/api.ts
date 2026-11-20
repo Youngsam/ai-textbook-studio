@@ -37,6 +37,10 @@ export type Preferences = {
 };
 export type Settings = Preferences & {
   model: string;
+  // Blank provider means translation follows the explanation model.
+  translation_provider: Provider | "";
+  translation_model: string;
+  translation_configured: boolean;
   available_models: string[];
   llm_configured: boolean;
   supports_images: boolean;
@@ -58,6 +62,15 @@ export type Message = {
   };
 };
 export type Page<T> = { items: T[]; next_cursor: string | null };
+export type PageTranslation = {
+  page: number;
+  content: string;
+  provider: string;
+  model: string;
+  truncated: boolean;
+  figures: { x: number; y: number; width: number; height: number }[];
+  created_at: string;
+};
 
 export async function api<T>(
   url: string,
