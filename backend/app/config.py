@@ -43,6 +43,10 @@ class Settings(BaseSettings):
     llm_timeout_seconds: float = 120
     llm_input_token_budget: int = 12000
     llm_max_output_tokens: int = 2000
+    # The tutor may read other pages or search the book when the current page is not enough.
+    llm_book_tools: bool = True
+    # UTF-8 bytes of other-page text one answer may pull in, shared by all lookups.
+    llm_tool_output_budget: int = 12000
     translation_max_output_tokens: int = 8000
     max_upload_bytes: int = 500 * 1024 * 1024
     max_pdf_pages: int = 2000

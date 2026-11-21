@@ -530,3 +530,35 @@ with pymupdf.open() as doc:
     await request.delete(`/api/books/${book.id}`);
   }
 });
+
+test("answers show other pages the tutor consulted and jump to them", async ({
+  page,
+}) => {
+  const result = await page.request.post("/api/books", {
+    multipart: {
+      title: "Cross-page test",
+      file: { name: "pages.pdf", mimeType: "application/pdf", buffer: pdf },
+    },
+  });
+  expect(result.status()).toBe(201);
+  const book = await result.json();
+  try {
+    await page.request.put(`/api/books/${book.id}/state`, {
+      data: { page: 3, zoom: 1, scroll_offset: 0 },
+    });
+    await page.goto(`/books/${book.id}`);
+    await expect(page.locator(".pdf-paper")).toBeVisible();
+    await page
+      .getByLabel("질문", { exact: true })
+      .fill("다른 페이지의 정의도 참고해서 설명해 줘");
+    await page.getByRole("button", { name: "질문 보내기" }).click();
+    const answer = page.locator(".message.assistant").last();
+    await expect(answer).toContainText("PDF 1쪽을 추가로 읽었습니다.");
+    const consulted = answer.locator(".consulted-pages");
+    await expect(consulted).toContainText("참고한 페이지");
+    await consulted.getByRole("button", { name: "p.1" }).click();
+    await expect(page.getByLabel("현재 페이지")).toHaveValue("1");
+  } finally {
+    await page.request.delete(`/api/books/${book.id}`);
+  }
+});

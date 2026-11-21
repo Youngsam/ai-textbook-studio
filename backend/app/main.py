@@ -21,6 +21,7 @@ from sqlalchemy import select, text, update
 from sqlalchemy.exc import IntegrityError
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
+from app import booktools
 from app.backup import (
     INTERVAL_SECONDS,
     RETAIN_COUNT,
@@ -50,7 +51,7 @@ from app.models import (
     Thread,
     now,
 )
-from app.pdf import PdfService
+from app.pdf import PdfService, cached_outline
 from app.schemas import (
     AnnotationCreate,
     AnnotationUpdate,
@@ -916,10 +917,41 @@ def create_app(settings: Settings | None = None, adapter=None):
             image_url = "data:image/jpeg;base64," + base64.b64encode(image_bytes).decode()
         return page_text, image, image_url, cache_key
 
+    def book_lookup(book_id, page_count, snapshot):
+        """Tool runner for one answer; records what was consulted in the context snapshot."""
+        state = {"pages": None, "budget": settings.llm_tool_output_budget}
+
+        async def pages():
+            if state["pages"] is None:
+                result = await pdf.run("texts", folder(book_id) / "original.pdf")
+                state["pages"] = json.loads(Path(result["path"]).read_text())
+            return state["pages"]
+
+        async def run(name, arguments):
+            try:
+                await pages()
+            except (ValueError, TimeoutError, OSError):
+                return "책 본문을 읽지 못했습니다. 현재 페이지 자료로만 답한다."
+            if name == "read_pages":
+                start = int(arguments["start"])
+                end = int(arguments.get("end", start))
+                output, read = booktools.read_pages(await pages(), start, end, state["budget"])
+                state["budget"] -= len(output.encode())
+                snapshot["consulted_pages"] = sorted({*snapshot["consulted_pages"], *read})
+                return output
+            if name == "search_book":
+                query = str(arguments["query"])[:200]
+                snapshot["searches"].append(query)
+                return booktools.search_book(await pages(), query)
+            return f"알 수 없는 도구입니다: {name}. 이 책은 1–{page_count}쪽입니다."
+
+        return run
+
     async def build_context(book_id, body):
         with Session() as session:
             book = get_book(session, book_id)
             title = book.title
+            page_count = book.page_count
             thread = session.scalar(select(Thread).where(Thread.book_id == str(book_id)))
             records = list(
                 session.scalars(
@@ -937,8 +969,17 @@ def create_app(settings: Settings | None = None, adapter=None):
         page_text, image, image_url, cache_key = await page_material(
             book_id, body.page, body.image_mode, body.crop
         )
+        tools = settings.llm_book_tools
         prefix = (
-            f"책: {title}\nPDF 페이지: {body.page}\n질문: {body.question}\n"
+            f"책: {title}\nPDF 페이지: {body.page}\n"
+            + (
+                booktools.format_outline(
+                    cached_outline(folder(book_id) / "original.pdf"), page_count
+                )
+                if tools
+                else ""
+            )
+            + f"질문: {body.question}\n"
             f"<selected_text>\n{body.selected_text}\n</selected_text>\n"
             + (
                 "첨부 이미지는 사용자가 선택한 현재 페이지의 일부 영역이다. "
@@ -983,6 +1024,8 @@ def create_app(settings: Settings | None = None, adapter=None):
             "policy_version": 1,
             "truncated": len(clipped) < len(page_text),
             "warnings": [],
+            "consulted_pages": [],
+            "searches": [],
         }
         if snapshot["truncated"]:
             snapshot["warnings"].append("페이지 본문이 입력 예산에 맞게 일부 생략되었습니다.")
@@ -992,6 +1035,8 @@ def create_app(settings: Settings | None = None, adapter=None):
             image_url,
             body.response_style,
             body.model,
+            tools=booktools.TOOLS if tools else None,
+            run_tool=book_lookup(book_id, page_count, snapshot) if tools else None,
         ), snapshot
 
     def persist(request_pk, assistant_id, content, status, error=None, snapshot=None, usage=None):
@@ -1009,7 +1054,7 @@ def create_app(settings: Settings | None = None, adapter=None):
 
     async def run_response(queue, book_id, body, row_id, assistant_id):
         content, last_saved, last_length, finished = "", time.monotonic(), 0, False
-        started = time.monotonic()
+        started, snapshot = time.monotonic(), None
         try:
             async with asyncio.timeout(settings.llm_timeout_seconds):
                 context, snapshot = await build_context(book_id, body)
@@ -1025,8 +1070,28 @@ def create_app(settings: Settings | None = None, adapter=None):
                         if time.monotonic() - last_saved >= 1 or len(content) - last_length >= 1000:
                             persist(row_id, assistant_id, content, "streaming")
                             last_saved, last_length = time.monotonic(), len(content)
+                    elif event["type"] == "tool":
+                        await queue.put(
+                            (
+                                "tool",
+                                {
+                                    "name": event["name"],
+                                    "arguments": event["arguments"],
+                                    "assistant_message_id": assistant_id,
+                                },
+                            )
+                        )
                     elif event["type"] == "done":
-                        persist(row_id, assistant_id, content, "completed", usage=event["usage"])
+                        persist(
+                            row_id,
+                            assistant_id,
+                            content,
+                            "completed",
+                            snapshot=snapshot,
+                            usage=event["usage"],
+                        )
+                        # Pages read during the answer are known only now.
+                        await queue.put(("context", snapshot))
                         await queue.put(
                             (
                                 "completed",
@@ -1038,7 +1103,7 @@ def create_app(settings: Settings | None = None, adapter=None):
                     raise RuntimeError("incomplete_stream")
         except asyncio.CancelledError:
             if not finished:
-                persist(row_id, assistant_id, content, "interrupted", "connection_closed")
+                persist(row_id, assistant_id, content, "interrupted", "connection_closed", snapshot)
             raise
         except Exception as error:
             code = "provider_failed"
@@ -1056,7 +1121,7 @@ def create_app(settings: Settings | None = None, adapter=None):
                 "invalid_pdf",
             }:
                 code = str(error)
-            persist(row_id, assistant_id, content, "failed", code)
+            persist(row_id, assistant_id, content, "failed", code, snapshot)
             await queue.put(
                 ("failed", {"code": code, "retryable": True, "assistant_message_id": assistant_id})
             )

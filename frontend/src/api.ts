@@ -61,6 +61,8 @@ export type Message = {
     image_attached?: boolean;
     crop?: CropRect | null;
     truncated?: boolean;
+    consulted_pages?: number[];
+    searches?: string[];
   };
 };
 export type Page<T> = { items: T[]; next_cursor: string | null };
