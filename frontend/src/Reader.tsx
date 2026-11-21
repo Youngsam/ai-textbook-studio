@@ -363,7 +363,12 @@ function ReadingRoom({
 
   async function savePreferences(
     next: typeof preferences &
-      Partial<Pick<Settings, "translation_provider" | "translation_model">>,
+      Partial<
+        Pick<
+          Settings,
+          "translation_provider" | "translation_model" | "translation_input"
+        >
+      >,
   ) {
     if (savingPreferences) return;
     setSavingPreferences(true);
@@ -1130,6 +1135,27 @@ function ReadingRoom({
                     {translationResult.message}
                   </div>
                 )}
+                <label>
+                  페이지 처리 방식
+                  <select
+                    aria-label="번역 페이지 처리 방식"
+                    value={settings.translation_input}
+                    disabled={savingPreferences}
+                    onChange={(e) =>
+                      savePreferences({
+                        ...preferences,
+                        translation_input: e.target
+                          .value as Settings["translation_input"],
+                      })
+                    }
+                  >
+                    <option value="image">
+                      이미지 · 수식·도표 정확도 우선
+                    </option>
+                    <option value="auto">자동 · 스캔 페이지만 이미지</option>
+                    <option value="text">텍스트 · 추출된 본문만</option>
+                  </select>
+                </label>
               </div>
               <label>
                 응답 스타일

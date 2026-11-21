@@ -1060,6 +1060,36 @@ def test_page_translation_failures_are_safe_and_not_cached(settings):
         assert response.json()["detail"]["code"] == "images_unsupported"
 
 
+def test_translation_input_mode_chooses_image_or_text(settings):
+    adapter = TranslationAdapter()
+    with TestClient(create_app(settings, adapter=adapter)) as client:
+        book = upload(client)
+        scan = upload(client, pdf=make_pdf(1, scan=True))
+        url = f"/api/books/{book['id']}/pages/1/translation"
+        scan_url = f"/api/books/{scan['id']}/pages/1/translation"
+        assert client.get("/api/settings").json()["translation_input"] == "image"
+        client.post(url).raise_for_status()
+        assert adapter.contexts[-1].image_url
+        saved = client.put("/api/settings", json={"translation_input": "text"}).json()
+        assert saved["translation_input"] == "text"
+        client.post(url).raise_for_status()
+        assert adapter.contexts[-1].image_url is None
+        assert "Learning page 1" in adapter.contexts[-1].prompt
+        response = client.post(scan_url)
+        assert response.status_code == 422
+        assert response.json()["detail"]["code"] == "image_required"
+        # Other settings saves leave the translation input untouched.
+        client.put("/api/settings", json={"image_mode": "always"}).raise_for_status()
+        assert client.get("/api/settings").json()["translation_input"] == "text"
+        client.put("/api/settings", json={"translation_input": "auto"}).raise_for_status()
+        client.post(url).raise_for_status()
+        assert adapter.contexts[-1].image_url is None
+        client.post(scan_url).raise_for_status()
+        assert adapter.contexts[-1].image_url
+        invalid = client.put("/api/settings", json={"translation_input": "pdf"})
+        assert invalid.status_code == 422
+
+
 def test_translation_model_defaults_to_chat_model_and_can_be_separate(settings):
     adapter = TranslationAdapter()
     with TestClient(create_app(settings, adapter=adapter)) as client:

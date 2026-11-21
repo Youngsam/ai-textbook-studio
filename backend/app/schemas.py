@@ -42,6 +42,7 @@ class SettingsUpdate(Preferences):
     # Blank provider means page translation follows the explanation model.
     translation_provider: Provider | Literal[""] | None = None
     translation_model: str | None = Field(default=None, max_length=200)
+    translation_input: Literal["image", "auto", "text"] | None = None
 
     @field_validator("translation_model")
     @classmethod

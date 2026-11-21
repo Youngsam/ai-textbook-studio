@@ -243,6 +243,7 @@ def create_app(settings: Settings | None = None, adapter=None):
                 "model": model,
                 "translation_provider": prefs.translation_provider,
                 "translation_model": prefs.translation_model,
+                "translation_input": prefs.translation_input,
                 "translation_configured": configured(*translation_model(prefs)),
                 "available_models": settings.available_models,
                 "llm_configured": configured(provider, model),
@@ -381,6 +382,8 @@ def create_app(settings: Settings | None = None, adapter=None):
                 prefs.translation_model = (
                     body.translation_model if body.translation_provider else ""
                 )
+            if body.translation_input is not None:
+                prefs.translation_input = body.translation_input
         return read_settings()
 
     @app.post("/api/settings/test")
@@ -658,12 +661,15 @@ def create_app(settings: Settings | None = None, adapter=None):
             row = session.get(PageTranslation, (book.id, page))
             return translation_record(row) if row else None
 
-    async def translate_page(book_id, page, provider, model):
-        # The page image always accompanies translation when the model accepts images:
+    async def translate_page(book_id, page, provider, model, translation_input):
+        # "image" (the default) attaches the page image whenever the model accepts images:
         # extracted text scrambles formulas and figure placement.
-        page_text, _, image_url, _ = await page_material(
-            book_id, page, "always" if settings.llm_supports_images else "auto"
-        )
+        image_mode = {
+            "image": "always" if settings.llm_supports_images else "auto",
+            "auto": "auto",
+            "text": "never",
+        }[translation_input]
+        page_text, _, image_url, _ = await page_material(book_id, page, image_mode)
         path = folder(book_id) / "original.pdf"
         figures = (await pdf.run("figures", path, page))["figures"]
         prefix = f"PDF 페이지: {page}\n"
@@ -764,7 +770,7 @@ def create_app(settings: Settings | None = None, adapter=None):
     translations = {}
     translation_failures = {
         "images_unsupported": "현재 모델은 이미지 입력이 비활성화되어 있어 이 페이지를 번역할 수 없습니다.",
-        "image_required": "텍스트가 없는 페이지입니다. AI 설정에서 이미지 첨부를 허용해 주세요.",
+        "image_required": "텍스트가 없는 페이지입니다. 번역 설정에서 페이지 처리 방식을 이미지 또는 자동으로 바꿔 주세요.",
         "image_too_large": "페이지 이미지가 너무 커서 번역할 수 없습니다.",
         "invalid_pdf": "PDF 페이지를 읽지 못했습니다.",
     }
@@ -775,6 +781,7 @@ def create_app(settings: Settings | None = None, adapter=None):
             translation_page(session, book_id, page)
             prefs = session.get(AppSettings, 1)
             provider, model = translation_model(prefs)
+            translation_input = prefs.translation_input
         if provider == "fake" and settings.llm_provider != "fake":
             fail(422, "invalid_provider", "테스트 모드는 서버에서만 활성화할 수 있습니다.")
         if provider != "fake" and not (settings.api_key_for(provider) and model):
@@ -787,7 +794,9 @@ def create_app(settings: Settings | None = None, adapter=None):
         task = translations.get(key)
         if task is None:
             # Translation outlives the request so leaving the page still fills the cache.
-            task = asyncio.create_task(translate_page(book_id, page, provider, model))
+            task = asyncio.create_task(
+                translate_page(book_id, page, provider, model, translation_input)
+            )
             translations[key] = task
 
             def finished(done):
