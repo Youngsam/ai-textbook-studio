@@ -835,6 +835,25 @@ button.primary:hover:not(:disabled) {
   position: absolute;
   inset: 0;
 }
+.pdf-paper .textLayer ::selection {
+  background: transparent;
+}
+.pdf-paper .textLayer ::-moz-selection {
+  background: transparent;
+}
+/* Opaque bars inside a translucent layer, so overlaps never darken. */
+.pdf-selection-layer {
+  position: absolute;
+  inset: 0;
+  opacity: 0.3;
+  mix-blend-mode: multiply;
+  pointer-events: none;
+}
+.pdf-selection-layer > div {
+  position: absolute;
+  border-radius: 2px;
+  background: #1f6fe5;
+}
 .pdf-notice {
   position: absolute;
   top: 25px;
