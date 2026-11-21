@@ -133,12 +133,26 @@ test("translation model is chosen separately in AI settings", async ({
     const saved = await (await request.get("/api/settings")).json();
     expect(saved.model).toBe(original.model);
 
+    const input = panel.getByLabel("번역 페이지 처리 방식");
+    await expect(input).toHaveValue("image");
+    await input.selectOption("text");
+    await expect
+      .poll(
+        async () =>
+          (await (await request.get("/api/settings")).json()).translation_input,
+      )
+      .toBe("text");
+
     await panel.getByLabel("번역 제공업체").selectOption("");
     await save.click();
     await expect(panel).toContainText("현재: 설명 모델과 같음");
   } finally {
     await request.put("/api/settings", {
-      data: { translation_provider: "", translation_model: "" },
+      data: {
+        translation_provider: "",
+        translation_model: "",
+        translation_input: "image",
+      },
     });
     await request.delete(`/api/books/${book.id}`);
   }

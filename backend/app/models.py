@@ -110,6 +110,7 @@ class AppSettings(Base):
     provider: Mapped[str] = mapped_column(default="")
     translation_provider: Mapped[str] = mapped_column(default="")
     translation_model: Mapped[str] = mapped_column(default="")
+    translation_input: Mapped[str] = mapped_column(default="image")
     backup_path: Mapped[str] = mapped_column(default="")
     backup_auto: Mapped[bool] = mapped_column(default=True)
     backup_state: Mapped[dict] = mapped_column(JSON, default=dict)

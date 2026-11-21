@@ -40,6 +40,8 @@ export type Settings = Preferences & {
   // Blank provider means translation follows the explanation model.
   translation_provider: Provider | "";
   translation_model: string;
+  // How translation reads the page: rendered image, automatic, or extracted text.
+  translation_input: "image" | "auto" | "text";
   translation_configured: boolean;
   available_models: string[];
   llm_configured: boolean;
