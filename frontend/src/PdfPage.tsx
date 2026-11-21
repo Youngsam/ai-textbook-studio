@@ -9,6 +9,7 @@ import {
   type TextSelection,
 } from "./annotations";
 import { CropSelection } from "./CropSelection";
+import { bindSelectionEnd } from "./selectionEnd";
 import type { CropAttachment, ReadingState } from "./api";
 import {
   referencePoint,
@@ -121,6 +122,7 @@ export function PdfPage({
     let active = true;
     let renderTask: RenderTask | undefined;
     let textLayer: TextLayer | undefined;
+    let unbindSelectionEnd: (() => void) | undefined;
     let frame = 0;
     ready.current = false;
     setRendering(true);
@@ -156,6 +158,7 @@ export function PdfPage({
       });
       await textLayer.render();
       if (!active) return;
+      unbindSelectionEnd = bindSelectionEnd(layer.current!);
       if (onLink) {
         // Only link annotations get interactive overlays; PDF actions/scripts and
         // forms are deliberately not handed to a general annotation renderer.
@@ -264,6 +267,7 @@ export function PdfPage({
       cancelAnimationFrame(frame);
       renderTask?.cancel();
       textLayer?.cancel();
+      unbindSelectionEnd?.();
     };
   }, [document, state.page, state.zoom, request?.id]);
 
