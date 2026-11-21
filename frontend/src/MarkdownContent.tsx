@@ -3,13 +3,15 @@ import ReactMarkdown, {
   defaultUrlTransform,
   type Components,
 } from "react-markdown";
+import remarkCjkFriendly from "remark-cjk-friendly";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
 import "katex/dist/katex.min.css";
 import { normalizeMath } from "./math";
 
 const MermaidDiagram = lazy(() => import("./MermaidDiagram"));
-const remarkPlugins = [remarkMath];
+// CommonMark ignores ** that closes after punctuation before a Korean letter (**“…”**고).
+const remarkPlugins = [remarkMath, remarkCjkFriendly];
 
 const markdownComponents: Components = {
   code({ className, children, node: _node, ...props }) {
