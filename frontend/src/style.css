@@ -841,6 +841,11 @@ button.primary:hover:not(:disabled) {
 .pdf-paper .textLayer ::-moz-selection {
   background: transparent;
 }
+/* Spans (z-index 1) stay above it; everything else on screen hits it mid-drag. */
+.pdf-paper .textLayer.selecting .endOfContent {
+  position: fixed;
+  inset: 0;
+}
 /* Opaque bars inside a translucent layer, so overlaps never darken. */
 .pdf-selection-layer {
   position: absolute;
