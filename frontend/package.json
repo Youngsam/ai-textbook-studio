@@ -23,6 +23,7 @@
     "react-markdown": "^10.0.0",
     "react-router-dom": "^7.1.0",
     "rehype-katex": "^7.0.1",
+    "remark-cjk-friendly": "^2.3.4",
     "remark-math": "^6.0.0"
   },
   "overrides": {
