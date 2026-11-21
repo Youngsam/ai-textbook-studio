@@ -11,6 +11,18 @@ import pymupdf
 from app.outline import detect_outline
 
 OUTLINE_CACHE_VERSION = 2
+PAGE_TEXT_CACHE = "pages-v1.json"
+
+
+def cached_outline(path):
+    """Outline items already detected for the reader, without starting OCR."""
+    try:
+        stored = json.loads(Path(path).with_name("outline-v1.json").read_text())
+        if stored.get("version") != OUTLINE_CACHE_VERSION:
+            return []
+        return stored["result"].get("items", [])
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return []
 
 
 def detect_figures(page, limit=8, gap=24):
@@ -100,6 +112,18 @@ def _worker(pipe, operation, path, page, image_path, outline_options, crop=None)
                             )
                         )
                         temporary.replace(cache)
+            elif operation == "texts":
+                cache = Path(path).with_name(PAGE_TEXT_CACHE)
+                if not cache.exists():
+                    temporary = cache.with_suffix(".tmp")
+                    temporary.write_text(
+                        json.dumps(
+                            [current.get_text(sort=True) for current in document],
+                            ensure_ascii=False,
+                        )
+                    )
+                    temporary.replace(cache)
+                result = {"path": str(cache)}
             elif operation == "figures":
                 result = {"figures": detect_figures(document[page - 1])}
             else:
@@ -149,7 +173,8 @@ class PdfService:
             process.start()
             writer.close()
             deadline = time.monotonic() + (
-                self.outline_timeout if operation == "outline" else self.timeout
+                # Whole-document passes get the longer budget.
+                self.outline_timeout if operation in {"outline", "texts"} else self.timeout
             )
             try:
                 while not reader.poll():

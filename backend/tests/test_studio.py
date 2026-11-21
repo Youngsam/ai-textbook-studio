@@ -209,6 +209,57 @@ def test_chat_context_idempotency_and_isolation(client):
     assert records[1]["status"] == "completed"
 
 
+def test_tutor_can_read_other_pages_on_demand(client, settings):
+    book = upload(client)
+    stream = events(ask(client, book, page=2, question="다른 페이지의 정의가 필요해")[0])
+    assert (
+        "tool",
+        {
+            "name": "read_pages",
+            "arguments": {"start": 1, "end": 1},
+            "assistant_message_id": stream[0][1]["assistant_message_id"],
+        },
+    ) in stream
+    contexts = [data for kind, data in stream if kind == "context"]
+    assert contexts[0]["consulted_pages"] == [] and contexts[-1]["consulted_pages"] == [1]
+    assert any(settings.data_dir.rglob("pages-v1.json"))
+    records = client.get(f"/api/books/{book['id']}/messages").json()["items"]
+    assert records[-1]["context_snapshot"]["consulted_pages"] == [1]
+    # Questions answerable from the current page never trigger a lookup.
+    plain = events(ask(client, book)[0])
+    assert all(kind != "tool" for kind, _ in plain)
+
+
+def test_book_lookup_tools_and_prompt(settings):
+    class Capture:
+        async def stream(self, context):
+            self.context = context
+            self.outputs = [
+                await context.run_tool("search_book", {"query": "page 3"}),
+                await context.run_tool("read_pages", {"start": 2, "end": 9}),
+                await context.run_tool("unknown", {}),
+            ]
+            yield {"type": "done", "usage": {}}
+
+    adapter = Capture()
+    with TestClient(create_app(settings, adapter=adapter)) as client:
+        book = upload(client, pdf=make_pdf(pages=4))
+        stream = events(ask(client, book)[0])
+        assert '<outline total_pdf_pages="4">' in adapter.context.prompt
+        assert [tool["name"] for tool in adapter.context.tools] == ["read_pages", "search_book"]
+        search, read, unknown = adapter.outputs
+        assert search.startswith("- p.3:")
+        assert '<page number="4">' in read and '<page number="1">' not in read
+        assert "알 수 없는 도구" in unknown
+        final = [data for kind, data in stream if kind == "context"][-1]
+        assert final["consulted_pages"] == [2, 3, 4] and final["searches"] == ["page 3"]
+    settings.llm_book_tools = False
+    with TestClient(create_app(settings, adapter=adapter)) as client:
+        book = upload(client)
+        events(ask(client, book, request_id=str(uuid4()))[0])
+        assert adapter.context.tools is None and "<outline" not in adapter.context.prompt
+
+
 def test_scan_auto_image_and_text_only_error(client):
     book = upload(client, pdf=make_pdf(1, scan=True))
     stream = events(ask(client, book)[0])

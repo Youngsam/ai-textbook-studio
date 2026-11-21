@@ -44,6 +44,7 @@ import {
   type Settings,
 } from "./api";
 import { PdfView } from "./PdfView";
+import { lookupLabel, pageRanges, rangeLabel } from "./bookLookup";
 import { useReadingState } from "./useReadingState";
 import { usePanelWidth } from "./usePanelWidth";
 
@@ -221,6 +222,7 @@ function ReadingRoom({
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [draft, setDraft] = useState<Message | null>(null);
+  const [lookup, setLookup] = useState<string | null>(null);
   const [extraMessages, setExtraMessages] = useState<Message[]>([]);
   const [olderCursor, setOlderCursor] = useState<string | null>(null);
   const [loadingOlder, setLoadingOlder] = useState(false);
@@ -463,13 +465,21 @@ function ReadingRoom({
               context_snapshot: {},
             });
             void history.refetch();
-          } else if (event.event === "delta")
+          } else if (event.event === "tool")
+            setLookup(
+              lookupLabel(
+                String(data.name),
+                (data.arguments ?? {}) as Record<string, unknown>,
+              ),
+            );
+          else if (event.event === "delta") {
+            setLookup(null);
             setDraft((previous) =>
               previous
                 ? { ...previous, content: previous.content + String(data.text) }
                 : null,
             );
-          else if (event.event === "context")
+          } else if (event.event === "context")
             setDraft((previous) =>
               previous
                 ? {
@@ -490,6 +500,7 @@ function ReadingRoom({
       if ((e as Error).name !== "AbortError") setError((e as Error).message);
     } finally {
       setBusy(false);
+      setLookup(null);
       await history.refetch();
       setDraft(null);
       abort.current = null;
@@ -1293,6 +1304,26 @@ function ReadingRoom({
                         : "저장된 답변이 없습니다.")}
                   </MarkdownContent>
                 </div>
+                {message.id === draft?.id && lookup && (
+                  <small className="muted lookup-status">{lookup}</small>
+                )}
+                {message.role === "assistant" &&
+                  !!message.context_snapshot.consulted_pages?.length && (
+                    <div className="consulted-pages">
+                      <span>참고한 페이지</span>
+                      {pageRanges(message.context_snapshot.consulted_pages).map(
+                        (range) => (
+                          <button
+                            key={range[0]}
+                            onClick={() => pageTo(range[0])}
+                            title={`PDF ${range[0]}쪽으로 이동`}
+                          >
+                            {rangeLabel(range)}
+                          </button>
+                        ),
+                      )}
+                    </div>
+                  )}
                 {message.context_snapshot.truncated && (
                   <small className="muted">
                     긴 페이지의 본문 일부가 생략되었습니다.

@@ -1098,6 +1098,32 @@ button.primary:hover:not(:disabled) {
   font-size: 9px;
   font-weight: 400;
 }
+.lookup-status {
+  display: block;
+  font-size: 10px;
+  margin-top: 6px;
+}
+.consulted-pages {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  margin-top: 8px;
+  font-size: 10px;
+  color: #7d8e6a;
+}
+.consulted-pages button {
+  font-size: 10px;
+  padding: 2px 7px;
+  border-radius: 4px;
+  border: 0;
+  background: #f0f3e6;
+  color: #647957;
+  cursor: pointer;
+}
+.consulted-pages button:hover {
+  background: #e4ead5;
+}
 .message.user .markdown {
   background: #eff2e9;
   padding: 10px 13px;
