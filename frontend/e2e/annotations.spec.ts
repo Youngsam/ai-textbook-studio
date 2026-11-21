@@ -223,3 +223,54 @@ test("marks stay selectable and locating a mark restores its scroll position", a
     await request.delete(`/api/books/${book.id}`);
   }
 });
+
+test("selection toolbar translates the selected text in the study assistant", async ({
+  page,
+  request,
+}) => {
+  expect((await (await request.get("/api/settings")).json()).provider).toBe(
+    "fake",
+  );
+  const uploaded = await request.post("/api/books", {
+    multipart: {
+      title: "선택 번역",
+      file: { name: "select.pdf", mimeType: "application/pdf", buffer: pdf },
+    },
+  });
+  const book = await uploaded.json();
+  try {
+    await page.goto(`/books/${book.id}`);
+    const span = page.locator(".textLayer span").first();
+    await expect(span).toBeVisible();
+    await span.evaluate((element) => {
+      const range = document.createRange();
+      range.selectNodeContents(element);
+      const selection = window.getSelection()!;
+      selection.removeAllRanges();
+      selection.addRange(range);
+      element.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+    });
+    const composer = page.getByPlaceholder(
+      "이 페이지에서 궁금한 점을 질문하세요…",
+    );
+    await composer.fill("작성 중인 질문");
+    const toolbar = page.getByRole("toolbar", { name: "선택한 텍스트 기록" });
+    await page.screenshot({ path: `${root}/.cache/selection-translate.png` });
+    await toolbar.getByRole("button", { name: "번역", exact: true }).click();
+    await expect(toolbar).toHaveCount(0);
+    const question = page.locator(".message.user").last();
+    await expect(question).toContainText(
+      "선택한 문구를 자연스러운 한국어로 번역해 줘.",
+    );
+    await expect(question.locator("blockquote")).toContainText(
+      "Page 1: A vector has magnitude and direction.",
+    );
+    await expect(page.locator(".message.assistant").last()).toContainText(
+      "테스트 응답",
+    );
+    // A question being typed in the composer is left untouched.
+    await expect(composer).toHaveValue("작성 중인 질문");
+  } finally {
+    await request.delete(`/api/books/${book.id}`);
+  }
+});

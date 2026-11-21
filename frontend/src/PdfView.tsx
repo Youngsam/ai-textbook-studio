@@ -6,7 +6,14 @@ import {
 } from "pdfjs-dist";
 import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import "pdfjs-dist/web/pdf_viewer.css";
-import { ArrowLeft, MessageSquare, Minus, Plus, X } from "lucide-react";
+import {
+  ArrowLeft,
+  Languages,
+  MessageSquare,
+  Minus,
+  Plus,
+  X,
+} from "lucide-react";
 import { api, type CropAttachment, type ReadingState } from "./api";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -48,6 +55,8 @@ export function PdfView({
   cropMode,
   onCrop,
   onCropCancel,
+  onTranslate,
+  translateDisabled,
 }: {
   id: string;
   cropMode: boolean;
@@ -59,6 +68,9 @@ export function PdfView({
   onScroll: (offset: number) => void;
   onSelection: (value: string) => void;
   onNavigate: (state: ReadingState) => void;
+  /** Sends the selected text to the study assistant for translation. */
+  onTranslate: (text: string, page: number) => void;
+  translateDisabled: boolean;
 }) {
   const [document, setDocument] = useState<PDFDocumentProxy | null>(null);
   const [error, setError] = useState("");
@@ -487,7 +499,7 @@ export function PdfView({
               setSelectionPosition({
                 x: Math.max(
                   8,
-                  Math.min(box.width - 284, bounds.left - box.left),
+                  Math.min(box.width - 344, bounds.left - box.left),
                 ),
                 y: Math.max(
                   8,
@@ -530,6 +542,15 @@ export function PdfView({
             }}
           >
             <MessageSquare size={15} /> 주석
+          </button>
+          <button
+            disabled={annotationBusy || translateDisabled}
+            onClick={() => {
+              onTranslate(selected.selected_text, selected.page);
+              setSelected(null);
+            }}
+          >
+            <Languages size={15} /> 번역
           </button>
           <button
             className="icon-button"

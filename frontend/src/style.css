@@ -1749,7 +1749,7 @@ button.primary:hover:not(:disabled) {
   align-items: center;
   flex-wrap: wrap;
   gap: 9px;
-  width: 276px;
+  width: 336px;
   padding: 9px;
   border: 1px solid #d8ded2;
   border-radius: 12px;

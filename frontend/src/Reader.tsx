@@ -414,9 +414,14 @@ function ReadingRoom({
     }
   }
 
-  async function send(event?: FormEvent, retryId?: string) {
+  async function send(
+    event?: FormEvent,
+    retryId?: string,
+    // Selection actions ask about their own text instead of the composer's question.
+    preset?: { question: string; selected_text: string; page: number },
+  ) {
     event?.preventDefault();
-    if (busy || (!retryId && !question.trim())) return;
+    if (busy || (!retryId && !preset && !question.trim())) return;
     setBusy(true);
     setError("");
     const controller = new AbortController();
@@ -424,10 +429,14 @@ function ReadingRoom({
     const requestId = crypto.randomUUID();
     const captured = {
       request_id: requestId,
-      question: question.trim(),
-      page: crop?.page ?? state.page,
-      crop: crop?.rect ?? null,
-      selected_text: crop ? "" : selection,
+      ...(preset
+        ? { ...preset, crop: null }
+        : {
+            question: question.trim(),
+            page: crop?.page ?? state.page,
+            crop: crop?.rect ?? null,
+            selected_text: crop ? "" : selection,
+          }),
       ...preferences,
     };
     try {
@@ -438,14 +447,16 @@ function ReadingRoom({
         (event) => {
           const data = event.data;
           if (event.event === "accepted") {
-            setQuestion("");
-            if (!retryId) setCrop(null);
+            if (!preset) {
+              setQuestion("");
+              if (!retryId) setCrop(null);
+            }
             setDraft({
               id: String(data.assistant_message_id),
               role: "assistant",
               content: "",
               page: captured.page,
-              selected_text: selection,
+              selected_text: captured.selected_text,
               status: "streaming",
               request_id: requestId,
               error_code: null,
@@ -797,6 +808,18 @@ function ReadingRoom({
                 setShowTranslation(false);
                 setSelection("");
                 window.getSelection()?.removeAllRanges();
+              }}
+              translateDisabled={
+                busy || Boolean(activeRemote) || !settings.llm_configured
+              }
+              onTranslate={(text, page) => {
+                setSelection("");
+                window.getSelection()?.removeAllRanges();
+                void send(undefined, undefined, {
+                  question: "선택한 문구를 자연스러운 한국어로 번역해 줘.",
+                  selected_text: text,
+                  page,
+                });
               }}
             />
             {pageTranslating && (
