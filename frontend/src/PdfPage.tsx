@@ -5,6 +5,7 @@ import {
   annotationColors,
   selectionRects,
   type Annotation,
+  type AnnotationRect,
   type TextSelection,
 } from "./annotations";
 import { CropSelection } from "./CropSelection";
@@ -73,6 +74,7 @@ export function PdfPage({
   const [renderVersion, setRenderVersion] = useState(0);
   const focusedAnnotation = useRef<number | null>(null);
   const [links, setLinks] = useState<Link[]>([]);
+  const [selected, setSelected] = useState<AnnotationRect[]>([]);
   const host = useRef<HTMLDivElement>(null);
   const paper = useRef<HTMLDivElement>(null);
   const canvas = useRef<HTMLCanvasElement>(null);
@@ -287,6 +289,38 @@ export function PdfPage({
     }
   }, [annotationFocus, renderVersion]);
 
+  // The native ::selection is hidden in CSS; draw merged line bars instead.
+  useEffect(() => {
+    let frame = 0;
+    const update = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        const selection = window.getSelection();
+        const inside =
+          selection &&
+          !selection.isCollapsed &&
+          selection.rangeCount &&
+          paper.current &&
+          layer.current?.contains(selection.anchorNode) &&
+          layer.current.contains(selection.focusNode);
+        const next = inside
+          ? selectionRects(
+              selection.getRangeAt(0),
+              paper.current!.getBoundingClientRect(),
+            )
+          : [];
+        setSelected((current) =>
+          current.length || next.length ? next : current,
+        );
+      });
+    };
+    window.document.addEventListener("selectionchange", update);
+    return () => {
+      cancelAnimationFrame(frame);
+      window.document.removeEventListener("selectionchange", update);
+    };
+  }, []);
+
   function captureSelection() {
     const selection = window.getSelection();
     if (
@@ -403,6 +437,19 @@ export function PdfPage({
             onCancel={onCropCancel}
           />
         )}
+        <div className="pdf-selection-layer" aria-hidden="true">
+          {selected.map((rect, index) => (
+            <div
+              key={index}
+              style={{
+                left: `${rect.x * 100}%`,
+                top: `${rect.y * 100}%`,
+                width: `${rect.width * 100}%`,
+                height: `${rect.height * 100}%`,
+              }}
+            />
+          ))}
+        </div>
         <div ref={layer} className="textLayer" />
         <div className="pdf-highlight-layer">
           {annotations
